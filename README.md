@@ -146,25 +146,6 @@ def test_cluster_replication():
     cluster.stop()
 ```
 
-You can also spin up a cluster via Docker:
-
-```yaml
-version: '3'
-services:
-  controller:
-    image: tinystream:latest
-    command: ["controller", "--port", "6000"]
-  broker1:
-    image: tinystream:latest
-    command: ["broker", "--id", "1", "--port", "5001", "--controller", "controller:6000"]
-  broker2:
-    image: tinystream:latest
-    command: ["broker", "--id", "2", "--port", "5002", "--controller", "controller:6000"]
-  broker3:
-    image: tinystream:latest
-    command: ["broker", "--id", "3", "--port", "5003", "--controller", "controller:6000"]
-```
-
 ## What to Test
 
 | Category        | Example                                              |
