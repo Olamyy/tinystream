@@ -1,5 +1,5 @@
 import asyncio
-from client.consumer import Consumer
+from tinystream.client import Consumer
 
 TOPIC = "clicks"
 PARTITION = 0

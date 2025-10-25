@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Tuple
 
-from client.connection import TinyStreamAPI
-from serializer.msg_pack import MSGPackSerializer
+from tinystream.client.connection import TinyStreamAPI
+from tinystream.serializer.msg_pack import MSGPackSerializer
 
 
 class Consumer:

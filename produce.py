@@ -2,7 +2,7 @@ import asyncio
 import random
 import uuid
 
-from client.producer import Producer
+from tinystream.client.producer import Producer
 
 
 async def main():
@@ -28,16 +28,12 @@ async def main():
                 "action": random.choice(actions),
                 "item": random.choice(items),
                 "message_id": str(uuid.uuid4()),
-                "count": message_count
+                "count": message_count,
             }
 
             # 2. Send the message
             print(f"Sending: {msg}")
-            response = await producer.send(
-                topic="clicks",
-                data=msg,
-                key=user
-            )
+            response = await producer.send(topic="clicks", data=msg, key=user)
             print(f"Broker response: {response}")
 
             message_count += 1

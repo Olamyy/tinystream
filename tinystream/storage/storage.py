@@ -2,7 +2,7 @@ import aiofiles
 import os
 from typing import AsyncGenerator, Tuple, Literal
 from pathlib import Path
-from storage.base import AbstractLogStorage
+from tinystream.storage.base import AbstractLogStorage
 
 
 class FileLogStorage(AbstractLogStorage):

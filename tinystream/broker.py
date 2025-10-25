@@ -4,13 +4,15 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Any, Optional, Type, Literal
 
-from partitions.base import BasePartition
-from partitions.partition import SingleLogPartition
-from serializer.base import AbstractSerializer
-from storage.base import AbstractLogStorage
-from config.parser import load_config
+from tinystream.partitions.base import BasePartition
+from tinystream.partitions.partition import SingleLogPartition
+from tinystream.serializer.base import AbstractSerializer
+from tinystream.storage.base import AbstractLogStorage
+from tinystream.config.parser import load_config
 
-DEFAULT_CONFIG_PATH = os.environ.get("TINYSTREAM_CONFIG_FILE", "config/conf.ini")
+DEFAULT_CONFIG_PATH = os.environ.get(
+    "TINYSTREAM_CONFIG_FILE", "tinystream/config/conf.ini"
+)
 
 
 class Broker:
@@ -46,9 +48,8 @@ class Broker:
 
     @staticmethod
     def init_serializer(serializer_name: str) -> AbstractSerializer:
-        print("serializer_name", serializer_name, serializer_name == "messagepack")
         if serializer_name == "messagepack":
-            from serializer.msg_pack import MSGPackSerializer
+            from tinystream.serializer.msg_pack import MSGPackSerializer
 
             return MSGPackSerializer()
         else:
@@ -67,7 +68,7 @@ class Broker:
         Initializes the storage *class* based on configuration.
         """
         if storage_name == "filelogstorage":
-            from storage.storage import FileLogStorage
+            from tinystream.storage.storage import FileLogStorage
 
             return FileLogStorage
         else:
@@ -256,3 +257,12 @@ class Broker:
             return {"status": "ok", "high_watermark": hwm}
         except KeyError:
             return {"status": "error", "message": "Topic or partition not found"}
+
+
+if __name__ == "__main__":
+    broker = Broker()
+
+    try:
+        asyncio.run(broker.start())
+    except KeyboardInterrupt:
+        print("\nBroker shutting down.")

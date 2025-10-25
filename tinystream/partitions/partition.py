@@ -2,9 +2,9 @@ import asyncio
 from typing import Any, List
 from pathlib import Path
 
-from partitions.base import BasePartition
-from serializer.msg_pack import MSGPackSerializer
-from storage.storage import FileLogStorage
+from tinystream.partitions.base import BasePartition
+from tinystream.serializer.msg_pack import MSGPackSerializer
+from tinystream.storage.storage import FileLogStorage
 
 
 class SingleLogPartition(BasePartition):

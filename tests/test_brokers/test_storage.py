@@ -3,7 +3,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from storage.storage import FileLogStorage
+from tinystream.storage import FileLogStorage
 
 
 class TestFileLogStorage(unittest.TestCase):

@@ -966,29 +966,31 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
-    { name = "locust" },
     { name = "msgpack" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "locust" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "ruff" },
+    { name = "tinystream" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiofiles", specifier = ">=25.1.0" },
-    { name = "locust", specifier = ">=2.42.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "locust", specifier = ">=2.42.0" },
     { name = "mypy", specifier = "==1.8.0" },
     { name = "pre-commit", specifier = ">=4.3.0" },
     { name = "ruff", specifier = ">=0.14.2" },
+    { name = "tinystream", editable = "." },
 ]
 
 [[package]]

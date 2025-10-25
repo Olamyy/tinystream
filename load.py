@@ -3,7 +3,7 @@ import time
 import uuid
 from typing import List
 
-from client.producer import Producer
+from tinystream.client.producer import Producer
 
 NUM_PRODUCERS = 50
 MESSAGES_PER_PRODUCER = 5000000
@@ -24,7 +24,7 @@ async def producer_worker(worker_id: int):
         msg = {
             "worker_id": worker_id,
             "message_id": i,
-            "payload": str(uuid.uuid4())  # A semi-realistic payload
+            "payload": str(uuid.uuid4()),  # A semi-realistic payload
         }
         try:
             await producer.send(TOPIC, msg, key=str(worker_id))
@@ -40,7 +40,7 @@ async def producer_worker(worker_id: int):
 
 async def main():
     print("--- Starting TinyStream Load Test ---")
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  Concurrent Producers: {NUM_PRODUCERS}")
     print(f"  Messages per Producer: {MESSAGES_PER_PRODUCER}")
     print(f"  Total Messages: {TOTAL_MESSAGES}")
@@ -61,10 +61,7 @@ async def main():
 
     start_time = time.monotonic()
 
-    tasks = [
-        producer_worker(i)
-        for i in range(NUM_PRODUCERS)
-    ]
+    tasks = [producer_worker(i) for i in range(NUM_PRODUCERS)]
 
     results: List[int] = await asyncio.gather(*tasks)
 
@@ -82,5 +79,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    print("NOTE: Clear your log directory (e.g., ./data/tinystream_logs) for a clean run.")
+    print(
+        "NOTE: Clear your log directory (e.g., ./data/tinystream_logs) for a clean run."
+    )
     asyncio.run(main())

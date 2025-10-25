@@ -1,7 +1,7 @@
 from typing import Any
 import msgpack
 
-from serializer.base import AbstractSerializer
+from tinystream.serializer.base import AbstractSerializer
 
 
 class MSGPackSerializer(AbstractSerializer):

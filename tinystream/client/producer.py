@@ -1,8 +1,8 @@
 import hashlib
 from typing import Any, Optional, Dict
 
-from client.connection import TinyStreamAPI
-from serializer.msg_pack import MSGPackSerializer
+from tinystream.client.connection import TinyStreamAPI
+from tinystream.serializer.msg_pack import MSGPackSerializer
 
 
 class Producer:

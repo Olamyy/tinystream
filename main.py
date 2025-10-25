@@ -1,6 +1,6 @@
 import asyncio
 
-from broker import Broker
+from tinystream.broker import Broker
 
 
 def main():
