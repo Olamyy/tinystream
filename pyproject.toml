@@ -1,0 +1,31 @@
+[project]
+name = "tinystream"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "aiofiles>=25.1.0",
+    "locust>=2.42.0",
+    "msgpack>=1.1.2"
+]
+
+
+[tool.hatch.build.targets.sdist]
+include = ["tinystream"]
+
+[tool.hatch.build.targets.wheel]
+include = ["tinystream"]
+
+[tool.hatch.build.targets.wheel.sources]
+ml_platform = "tinystream"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy==1.8.0",
+    "pre-commit>=4.3.0",
+    "ruff>=0.14.2",
+]
