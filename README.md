@@ -1,18 +1,126 @@
 # TinyStream
 
-TinyStream is a lightweight in Python. It’s designed to demonstrate the internal mechanics of modern event streaming:
-append-only logs, partitioned storage, replication, and streaming processing — all in a small, readable codebase.
+TinyStream is a lightweight streaming system in Python, inspired by Apache Kafka.
+It’s designed to demonstrate the internal mechanics of a modern event streaming platform: append-only logs, partitioned storage, replication, and service discovery — all in a small, readable codebase.
+
+## Design Philosophy:
+
+**This is not a production system.** It is a "glass box" designed to reproduce the core concepts from systems like Kafka in a minimal, hackable codebase.
+
+It exists to help answer questions like:
+* How does Kafka’s storage engine work internally?
+* How does distributed log replication operate?
+* How do producers and consumers interact via offsets?
+* How do components discover each other and handle leader election?
+
+It aims to provide readable code that models the essence of distributed stream storage.
 
 ## Features
 
 * Append-only partitioned log storage
 * Durable, segment-based storage on disk
-* Producer / Consumer APIs (Kafka-style)
-* Controller node for broker and topic metadata
-* Broker cluster simulation (multi-node)
-* Replication and leader election (WIP)
-* Retention policies for segment cleanup
+* Producer / Consumer client APIs
+* Controller node for cluster metadata and leader election
+* Broker cluster simulation
 * Local cluster harness for distributed testing
+* **[WIP]** Replication and leader election
+* **[WIP]** Retention policies for segment cleanup
+
+## Installation
+
+The project uses `uv` for dependency management and execution.
+
+1.  Clone the repository:
+    ```bash
+    git clone [https://github.com/Olamyy/tinystream](https://github.com/Olamyy/tinystream)
+    cd tinystream
+    ```
+2.  Install the required dependencies:
+    ```bash
+    uv install
+    ```
+
+## Quick Start: Running Locally
+
+Here is how to run a minimal "cluster" (one controller, one broker) on your machine.
+
+### Step 1: Start the Controller
+
+The Controller manages cluster metadata (topics, brokers, partition leaders).
+
+```bash
+uv run python -m tinystream.controller --port 6000
+```
+
+### Step 2: Start a Broker
+
+The Broker stores data. It registers itself with the Controller.
+```bash
+uv run python -m tinystream.broker --mode cluster --broker-number=2
+```
+
+### Step 4: Create a Topic
+
+Topics must be created before you can produce to them. Use the admin client to ask the Controller to create a topic.
+
+```bash
+uv run python -m tinystream.admin create-topic \
+    --topic "events" \
+    --partitions 3 \
+    --replication-factor 1 \
+    --controller "localhost:6000"
+```
+
+
+### Step 5: Produce Messages
+
+```python
+from tinystream.client.producer import Producer
+from tinystream.config.parser import TinyStreamConfig
+
+config = TinyStreamConfig.from_default_config_file()
+config.mode = "cluster"
+producer = Producer(config=config)
+
+print("Sending 10 messages...")
+
+for i in range(10):
+    msg = f"hello-tinystream-{i}".encode('utf-8')
+    producer.send("events", msg)
+    print(f"Sent: {msg.decode()}")
+
+print("Done.")
+```
+
+### Step 6: Consume Messages
+
+```python
+
+from tinystream.client.consumer import Consumer
+from tinystream.config.parser import TinyStreamConfig
+
+config = TinyStreamConfig.from_default_config_file()
+
+config.mode = "cluster"
+consumer = Consumer(config=config, group_id="test-group")
+
+consumer.connect()
+
+consumer.assign(topic="events", partition=0, start_offset=0)
+
+for _message in consumer.poll():
+    print(f"Received: {_message.value.decode()}")
+
+```
+
+### Running Components in Isolation
+
+For quick testing, each core component can be run in isolation directly as a module:
+
+- Controller: `uv run python -m tinystream.controller`
+- Broker: `uv run python -m tinystream.broker`
+- Producer: `uv run python -m tinystream.client.producer`
+- Consumer: `uv run python -m tinystream.client.consumer`
 
 ## Architecture Overview
 
@@ -20,7 +128,7 @@ TinyStream is split into five layers:
 
 ```
 ┌────────────────────────────────────────────┐
-│        Producers / Consumers               │
+│          Producers / Consumers             │
 │  • Send and fetch records from topics      │
 │  • Commit offsets                          │
 └────────────────────────────────────────────┘
@@ -36,7 +144,7 @@ TinyStream is split into five layers:
                  ▼
 ┌────────────────────────────────────────────┐
 │                Partition                   │
-│  • Manages append-only log segments        │
+│  • Manages append-only log segments        |
 │  • Handles retention and compaction        │
 │  • Stores offset and time indexes          │
 └────────────────────────────────────────────┘
@@ -78,73 +186,6 @@ data/
 
 Messages are never deleted after consumption — instead, TinyStream enforces a retention policy (by time or size) to delete or compact old segments.
 
-## Local Cluster Simulation
-
-You can run a multi-broker cluster locally to test replication and leader election:
-
-```
-localhost
-└── TinyStream Cluster
-    ├── broker-1 (port 5001)
-    ├── broker-2 (port 5002)
-    ├── broker-3 (port 5003)
-    └── controller (port 6000)
-```
-
-Each broker stores its own data in a separate directory (e.g., `/tmp/tinystream/b1`).
-
-## Example Usage
-
-### Start a local controller and brokers
-
-```bash
-python -m tinystream.controller --port 6000
-python -m tinystream.broker --id 1 --port 5001 --controller localhost:6000
-python -m tinystream.broker --id 2 --port 5002 --controller localhost:6000
-```
-
-### Produce messages
-
-```python
-from tinystream.client import Producer
-
-producer = Producer(controller="localhost:6000")
-for i in range(10):
-    producer.send("events", f"msg-{i}".encode())
-```
-
-### Consume messages
-
-```python
-from tinystream.client import Consumer
-
-consumer = Consumer(controller="localhost:6000")
-for msg in consumer.read("events"):
-    print(msg.value)
-```
-
-## Local Cluster Testing
-
-TinyStream includes a built-in harness for testing multi-broker setups:
-
-```python
-from tinystream.testing import LocalCluster
-
-def test_cluster_replication():
-    cluster = LocalCluster(brokers=3)
-    cluster.start()
-
-    p = cluster.new_producer()
-    c = cluster.new_consumer()
-
-    for i in range(100):
-        p.send("demo", f"event-{i}".encode())
-
-    msgs = c.read("demo", from_beginning=True)
-    assert len(msgs) == 100
-
-    cluster.stop()
-```
 
 ## What to Test
 
@@ -154,24 +195,4 @@ def test_cluster_replication():
 | Leader Election | Kill leader → ensure controller reassigns            |
 | Retention       | Configure short TTL → check old segment deletion     |
 | Consistency     | Compare offsets after recovery                       |
-| Consumer Groups | Add/remove consumers → verify rebalancing            |
-
-## Roadmap
-
-* [ ] Controller-based leader election
-* [ ] Replication between brokers
-* [ ] Topic compaction policies
-* [ ] Async I/O for log reads
-* [ ] REST/gRPC API layer
-* [ ] Stream processing DSL (TinyFlink)
-
-## Design Philosophy
-
-TinyStream is not a production system. It's primarily to reproduce core concepts from event streaming systems in a minimal codebase.
-
-* How Kafka’s storage engine works internally
-* How distributed log replication operates
-* How producers and consumers interact via offsets
-* How checkpointing, retention, and recovery behave in real streaming systems
-
-It aims to provide readable, hackable code that models the essence of stream storage.
+| Consumer Groups | Add/remove consumers → verify rebalancing

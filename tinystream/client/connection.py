@@ -36,14 +36,14 @@ class TinyStreamAPI:
         self.is_connected = False
 
     async def _connect(self) -> None:
-        """Establishes a connection to the broker."""
+        """Establishes a connection to the controller."""
         # Use a lock to prevent multiple coroutines from trying to
         # connect at the same time.
         async with self._connect_lock:
             if self.is_connected:
                 return
 
-            print(f"Connecting to broker at {self.host}:{self.port}...")
+            print(f"Connecting to controller at {self.host}:{self.port}...")
             try:
                 self._reader, self._writer = await asyncio.open_connection(
                     self.host, self.port
@@ -51,7 +51,7 @@ class TinyStreamAPI:
                 self.is_connected = True
                 print("Connection successful.")
             except (OSError, ConnectionRefusedError) as e:
-                print(f"Failed to connect to broker: {e}")
+                print(f"Failed to connect to controller: {e}")
                 self.is_connected = False
                 raise
 
@@ -100,10 +100,12 @@ class TinyStreamAPI:
                 return response
 
             except (asyncio.IncompleteReadError, ConnectionResetError) as e:
-                print(f"Connection lost: {e}. Attempting to reconnect on next call.")
+                print(
+                    f"Connection lost: {e}. Attempting to reconnect on next call. Request data: {request}"
+                )
                 await self.close()
                 raise ConnectionError("Connection lost while processing request.")
             except Exception as e:
                 print(f"An error occurred: {e}")
-                await self.close()  # Close connection on unknown error
+                await self.close()
                 raise
