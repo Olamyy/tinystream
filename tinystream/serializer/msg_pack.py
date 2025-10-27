@@ -11,4 +11,4 @@ class MSGPackSerializer(AbstractSerializer):
 
     @staticmethod
     def deserialize(data: bytes) -> Any:
-        return msgpack.unpackb(data, raw=False)
+        return msgpack.unpackb(data, raw=False, strict_map_key=False)
