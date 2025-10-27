@@ -1,19 +1,6 @@
 # TinyStream
 
-TinyStream is a lightweight streaming system in Python, inspired by Apache Kafka.
-It’s designed to demonstrate the internal mechanics of a modern event streaming platform: append-only logs, partitioned storage, replication, and service discovery — all in a small, readable codebase.
-
-## Design Philosophy:
-
-**This is not a production system.** It is a "glass box" designed to reproduce the core concepts from systems like Kafka in a minimal, hackable codebase.
-
-It exists to help answer questions like:
-* How does Kafka’s storage engine work internally?
-* How does distributed log replication operate?
-* How do producers and consumers interact via offsets?
-* How do components discover each other and handle leader election?
-
-It aims to provide readable code that models the essence of distributed stream storage.
+TinyStream is a `lightweight` streaming engine in Python, inspired by Apache Kafka.
 
 ## Features
 
@@ -44,22 +31,22 @@ The project uses `uv` for dependency management and execution.
 
 Here is how to run a minimal "cluster" (one controller, one broker) on your machine.
 
-### Step 1: Start the Controller
+#### Step 1: Start the Controller
 
 The Controller manages cluster metadata (topics, brokers, partition leaders).
 
 ```bash
-uv run python -m tinystream.controller --port 6000
+uv run python -m tinystream.controller
 ```
 
-### Step 2: Start a Broker
+#### Step 2: Start a Broker
 
 The Broker stores data. It registers itself with the Controller.
 ```bash
 uv run python -m tinystream.broker --mode cluster --broker-number=2
 ```
 
-### Step 4: Create a Topic
+#### Step 4: Create a Topic
 
 Topics must be created before you can produce to them. Use the admin client to ask the Controller to create a topic.
 
@@ -72,7 +59,7 @@ uv run python -m tinystream.admin create-topic \
 ```
 
 
-### Step 5: Produce Messages
+#### Step 5: Produce Messages
 
 ```python
 from tinystream.client.producer import Producer
@@ -92,7 +79,7 @@ for i in range(10):
 print("Done.")
 ```
 
-### Step 6: Consume Messages
+#### Step 6: Consume Messages
 
 ```python
 
@@ -113,7 +100,7 @@ for _message in consumer.poll():
 
 ```
 
-### Running Components in Isolation
+#### Running Components in Isolation
 
 For quick testing, each core component can be run in isolation directly as a module:
 
