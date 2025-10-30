@@ -21,7 +21,9 @@ async def create_db_schemas(connection):
         (
             topic_name         TEXT PRIMARY KEY,
             partition_count    INTEGER NOT NULL,
-            replication_factor INTEGER NOT NULL
+            replication_factor INTEGER NOT NULL,
+            retention_ms       INTEGER DEFAULT 604800000 NOT NULL,
+            retention_bytes    INTEGER DEFAULT -1 NOT NULL
         )
         """
     )
