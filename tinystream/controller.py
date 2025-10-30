@@ -1,43 +1,23 @@
 import asyncio
+import json
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 import time
-from typing import Dict, List, Optional, Any, Literal
+from typing import Dict, Optional, Any, Literal
 from pathlib import Path
 
+from tinystream.metastore import Metastore
+from tinystream.models import BrokerInfo, TopicMetadata, PartitionMetadata
 from tinystream import DEFAULT_CONFIG_PATH
 from tinystream.client.base import BaseAsyncClient
+from tinystream.client.topic_manager import TopicManager
 from tinystream.config.parser import TinyStreamConfig
 from tinystream.serializer.base import AbstractSerializer
 
 
-@dataclass
-class BrokerInfo:
-    broker_id: int
-    host: str
-    port: int
-    last_heartbeat: float = time.time()
-    is_alive: bool = True
-    status: Literal["ALIVE", "TIMED_OUT", "SHUTDOWN"] = "ALIVE"
-
-
-@dataclass
-class PartitionMetadata:
-    partition_id: int
-    leader: Optional[int]
-    replicas: List[int]
-
-
-@dataclass
-class TopicMetadata:
-    name: str
-    partitions: Dict[int, PartitionMetadata]
-
-
 class Controller(BaseAsyncClient):
     """
-    TinyStream Controller — manages cluster metadata, brokers, and leader elections.
-    (Now a fully asynchronous, persistent server)
+    Manages cluster metadata, brokers, and leader elections.
     """
 
     def __init__(self, config: TinyStreamConfig):
@@ -74,6 +54,24 @@ class Controller(BaseAsyncClient):
         self._lock = asyncio.Lock()
         self._monitor_task: Optional[asyncio.Task] = None
 
+        self.topic_manager = TopicManager(
+            db_connection=None,
+            brokers=self.brokers,
+            topics=self.topics,
+            lock=self._lock,
+        )
+
+        self.metastore_http_port = int(metastore_config.get("http_port", 6000))
+
+        self.metastore = Metastore(
+            topic_manager=self.topic_manager,
+            topics=self.topics,
+            brokers=self.brokers,
+            lock=self._lock,
+            port=self.metastore_http_port,
+        )
+        self.metastore_task = None
+
     @staticmethod
     def init_serializer(serializer_name: str) -> AbstractSerializer:
         if serializer_name == "messagepack":
@@ -106,8 +104,8 @@ class Controller(BaseAsyncClient):
                 "SELECT * FROM partitions"
             ) as p_cursor:
                 async for row in p_cursor:
-                    topic, p_id, leader, replicas_json = row
-                    replicas = [int(r) for r in replicas_json.split(",")]
+                    topic, p_id, leader, replicas = row
+                    replicas = [int(r) for r in json.loads(replicas)]
                     if topic in self.topics:
                         self.topics[topic].partitions[p_id] = PartitionMetadata(
                             partition_id=p_id, leader=leader, replicas=replicas
@@ -120,8 +118,17 @@ class Controller(BaseAsyncClient):
     async def start(self):
         """Starts the controller server and background tasks."""
         await self.init_metastore(db_path=self.metastore_db_path)
+        self.topic_manager.db_connection = self.db_connection
+
         await self._load_metadata()
+        self.metastore_task = asyncio.create_task(
+            self.metastore.start(), name="metastore-api-server"
+        )
         self.start_background_tasks()
+
+        print(
+            f"[Controller] Metastore API docs at http://localhost:{self.metastore_http_port}/docs"
+        )
 
         await self.start_server()
         addr = self._server.sockets[0].getsockname()
@@ -138,7 +145,7 @@ class Controller(BaseAsyncClient):
             await self._server.serve_forever()
 
     async def close(self):
-        print("\n[Controller] Shutting down...")
+        print("\n[Controller] Shutdown...")
         await self.stop_background_tasks()
         if self._server:
             self._server.close()
@@ -156,25 +163,44 @@ class Controller(BaseAsyncClient):
             command = request.get("command")
 
             if command == "register_broker":
-                await self.register_broker(
-                    request["broker_id"], request["host"], request["port"]
-                )
-                return {"status": "ok"}
+                broker_id = request["broker_id"]
+                await self.register_broker(broker_id, request["host"], request["port"])
+
+                assignments = await self._get_assignments_for_broker(broker_id)
+
+                return {
+                    "status": "ok",
+                    "message": "Broker registered successfully",
+                    "assignments": assignments,
+                }
 
             elif command == "deregister_broker":
                 return await self._handle_deregister(request)
 
             elif command == "heartbeat":
-                await self.update_broker_heartbeat(request["broker_id"])
-                return {"status": "ok"}
+                broker_id = request["broker_id"]
+                await self.update_broker_heartbeat(broker_id)
+
+                assignments = await self._get_assignments_for_broker(broker_id)
+
+                return {"status": "ok", "assignments": assignments}
 
             elif command == "create_topic":
-                await self.create_topic(
-                    request["name"],
-                    request["partitions"],
-                    request["replication_factor"],
-                )
-                return {"status": "ok"}
+                try:
+                    await self.topic_manager.create_topic(
+                        request["name"],
+                        request["partitions"],
+                        request["replication_factor"],
+                    )
+                    return {
+                        "status": "success",
+                        "message": f"Topic {request['name']} created.",
+                    }
+                except ValueError as e:
+                    return {"status": "error", "message": str(e)}
+                except Exception as e:
+                    print(f"FATAL error in handle_create_topic_request: {e}")
+                    return {"status": "error", "message": f"Internal server error: {e}"}
 
             elif command == "get_cluster_metadata":
                 metadata = await self.get_cluster_metadata()
@@ -222,61 +248,24 @@ class Controller(BaseAsyncClient):
                 self.brokers[broker_id].is_alive = True
                 # TODO: Trigger rebalancing
 
-    async def create_topic(self, name: str, partitions: int, replication_factor: int):
+    # --- NEW HELPER METHOD ---
+    async def _get_assignments_for_broker(self, broker_id: int) -> list[dict]:
+        """
+        Scans the in-memory state for all partitions assigned to a broker.
+        This method is self-contained and acquires its own lock.
+        """
+        assignments = []
         async with self._lock:
-            if not self.db_connection:
-                raise Exception("Database not connected")
-            if name in self.topics:
-                raise ValueError(f"Topic {name} already exists.")
+            for topic_name, topic_meta in self.topics.items():
+                for part_id, part_meta in topic_meta.partitions.items():
+                    if broker_id in part_meta.replicas:
+                        role = "leader" if broker_id == part_meta.leader else "follower"
+                        assignments.append(
+                            {"topic": topic_name, "partition_id": part_id, "role": role}
+                        )
+        return assignments
 
-            await self.db_connection.execute(
-                "INSERT INTO topics (topic_name, partition_count, replication_factor) VALUES (?, ?, ?)",
-                (name, partitions, replication_factor),
-            )
-
-            topic_metadata = TopicMetadata(name=name, partitions={})
-            self.topics[name] = topic_metadata
-
-            await self._assign_partitions(name, partitions, replication_factor)
-
-            await self.db_connection.commit()
-
-    async def _assign_partitions(
-        self, topic: str, partitions: int, replication_factor: int
-    ):
-        if not self.db_connection:
-            raise Exception("Database not connected")
-
-        brokers_alive = [b.broker_id for b in self.brokers.values() if b.is_alive]
-        if len(brokers_alive) < replication_factor:
-            raise ValueError("Not enough brokers alive to satisfy replication factor.")
-
-        topic_metadata = self.topics[topic]
-
-        partition_data_to_insert = []
-        for partition_id in range(partitions):
-            replicas = []
-            for i in range(replication_factor):
-                broker_index = (partition_id + i) % len(brokers_alive)
-                replicas.append(brokers_alive[broker_index])
-
-            leader = replicas[0]
-            replicas_json = ",".join(map(str, replicas))
-
-            partition_metadata = PartitionMetadata(
-                partition_id=partition_id, leader=leader, replicas=replicas
-            )
-            topic_metadata.partitions[partition_id] = partition_metadata
-
-            partition_data_to_insert.append(
-                (topic, partition_id, leader, replicas_json)
-            )
-
-        await self.db_connection.executemany(
-            "INSERT INTO partitions (topic_name, partition_id, leader, replicas) VALUES (?, ?, ?, ?)",
-            partition_data_to_insert,
-        )
-        print(f"[Controller] Assigned and persisted partitions for topic {topic}")
+    # --- END NEW HELPER METHOD ---
 
     async def _elect_leader(self, topic: str, partition_id: int) -> Optional[int]:
         if not self.db_connection:
@@ -315,7 +304,7 @@ class Controller(BaseAsyncClient):
             dead_broker_ids = []
             for broker in self.brokers.values():
                 if broker.status == "ALIVE" and (
-                    current_time - broker.last_heartbeat > self.heartbeat_timeout
+                    current_time - broker.last_heartkey > self.heartbeat_timeout
                 ):
                     print(f"[Controller] Broker {broker.broker_id} timed out.")
                     dead_broker_ids.append(broker.broker_id)
@@ -399,13 +388,6 @@ async def main():
     controller = Controller(config=config)
     try:
         await controller.start()
-
-        default_broker_counter = 2
-        for _broker_id in range(default_broker_counter):
-            print(f"[Controller] Pre-registering broker {_broker_id}...")
-            await controller.register_broker(
-                broker_id=_broker_id, host="localhost", port=int(f"909{_broker_id}")
-            )
 
         print("[Controller] Startup complete. Running server forever...")
         await controller.run_forever()

@@ -48,6 +48,8 @@ class Producer:
                 self._broker_info_cache,
                 self._broker_connections,
                 self.serializer,
+                self._metadata_lock,
+                self._controller_connection,
             )
 
         else:
@@ -81,7 +83,7 @@ class Producer:
         if self.mode == "cluster":
             print("[Producer] (Cluster Mode): Connecting to controller...")
             await self._controller_connection.ensure_connected()  # type: ignore
-            await self._refresh_cluster_metadata()
+            await self.cluster_manager.refresh_cluster_metadata()
 
         elif self.mode == "single":
             print("[Producer] (Single Mode): Connecting to broker...")
@@ -120,9 +122,9 @@ class Producer:
         """Gets partition count for a topic based on mode."""
         if self.mode == "cluster":
             if topic not in self._topic_metadata_cache:
-                await self._refresh_cluster_metadata()
+                await self.cluster_manager.refresh_cluster_metadata()
 
-            topic_partitions = self._topic_metadata_cache.get(topic)
+            topic_partitions = self.cluster_manager._topic_metadata_cache.get(topic)
             if not topic_partitions:
                 raise ValueError(f"Topic '{topic}' not found in cluster metadata.")
             return len(topic_partitions)
@@ -140,7 +142,6 @@ class Producer:
 
         partition_count = await self._get_partition_count(topic)
         partition_id = self._get_partition_id(key_bytes, partition_count)
-
         request = {
             "command": "append",
             "topic": topic,
@@ -152,6 +153,31 @@ class Producer:
             return await self._send_cluster(request, retries)
         else:
             return await self._send_single(request)
+
+    async def create_topic(
+        self, topic: str, partition_count: int, replication_factor: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Creates a new topic in the cluster.
+        Only applicable in cluster mode.
+        """
+
+        request = {
+            "command": "create_topic",
+            "topic": topic,
+            "partition_count": partition_count,
+            "replication_factor": replication_factor,
+        }
+
+        await self._controller_connection.ensure_connected()  # type: ignore
+        response = await self._controller_connection.send_request(  # type: ignore
+            request
+        )
+
+        if response.get("status") == "ok" and self.mode == "cluster":
+            await self.cluster_manager.refresh_cluster_metadata()
+
+        return response
 
     async def _send_single(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handles sending in single-broker mode."""
@@ -185,9 +211,7 @@ class Producer:
                 if response.get("status") == "ok":
                     return response
 
-                print(
-                    f"[Producer]: Broker error: {response.get('message')}. Retrying..."
-                )
+                print(f"[Producer]: Broker error: {response}. Retrying...")
                 await self.cluster_manager.invalidate_caches(connection)
 
             except (ConnectionError, asyncio.TimeoutError) as e:
@@ -204,30 +228,6 @@ class Producer:
             f"Failed to send message to topic '{topic}' after {retries} retries."
         )
 
-    async def _refresh_cluster_metadata(self) -> None:
-        """Fetches the latest cluster state from the controller."""
-        if self.mode != "cluster":
-            return
-
-        async with self._metadata_lock:
-            try:
-                await self._controller_connection.ensure_connected()  # type: ignore
-                response = await self._controller_connection.send_request(  # type: ignore
-                    {"command": "get_cluster_metadata"}
-                )
-
-                if response.get("status") == "ok":
-                    metadata = response["metadata"]
-                    self._broker_info_cache = metadata.get("brokers", {})
-                    self._topic_metadata_cache = metadata.get("partitions", {})
-                    print("[Producer]: Metadata refreshed.")
-                else:
-                    print(
-                        f"[Producer]: Failed to refresh metadata: {response.get('message')}"
-                    )
-            except Exception as e:
-                print(f"[Producer]: Error refreshing metadata: {e}")
-
 
 async def main(
     config: Optional[str] = DEFAULT_CONFIG_PATH, mode: str = "single"
@@ -236,12 +236,7 @@ async def main(
     config.mode = mode  # type: ignore
     producer = Producer(config=config)  # type: ignore
 
-    dummy_events = [
-        {"user": "alice", "action": "click", "item": "item_A"},
-        {"user": "bob", "action": "view", "item": "page_X"},
-        {"user": "carlos", "action": "purchase", "item": "item_B"},
-        {"user": "denise", "action": "scroll", "item": "button_Y"},
-    ]
+    dummy_events = [{"user": "alice", "action": "clicks", "item": "item_A"}]
 
     try:
         await producer.connect()
@@ -254,7 +249,7 @@ async def main(
 
             print(f"Sending: {event}")
             response = await producer.send(
-                topic=f"{event["action"]}s", data=event, key=event["user"]
+                topic=event["action"], data=event, key=event["user"]
             )
             print(f"Broker response: {response}")
 

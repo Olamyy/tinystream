@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Any, Tuple, Optional
 from tinystream.client.connection import TinyStreamAPI
 from tinystream.serializer.base import AbstractSerializer
@@ -11,15 +12,16 @@ class ClusterManager:
         broker_info_cache: Dict[int, Any],
         broker_connections: Dict[Tuple[str, int], TinyStreamAPI],
         serializer: AbstractSerializer,
+        metadata_lock: asyncio.Lock,
+        controller_connection: TinyStreamAPI,
     ) -> None:
         self.mode = mode
         self._topic_metadata_cache = topic_metadata_cache
         self._broker_info_cache = broker_info_cache
         self._broker_connections = broker_connections
         self.serializer = serializer
-
-    async def _refresh_cluster_metadata(self):
-        raise NotImplementedError("This method should be implemented in the subclass.")
+        self._metadata_lock = metadata_lock
+        self._controller_connection = controller_connection
 
     async def get_leader_connection(
         self, topic: str, partition_id: int
@@ -33,7 +35,7 @@ class ClusterManager:
 
         topic_partitions = self._topic_metadata_cache.get(topic)
         if not topic_partitions:
-            await self._refresh_cluster_metadata()
+            await self.refresh_cluster_metadata()
             topic_partitions = self._topic_metadata_cache.get(topic)
             if not topic_partitions:
                 raise ValueError(f"Topic '{topic}' not found after refresh.")
@@ -48,7 +50,7 @@ class ClusterManager:
 
         broker_info = self._broker_info_cache.get(leader_id)
         if not broker_info:
-            await self._refresh_cluster_metadata()
+            await self.refresh_cluster_metadata()
             broker_info = self._broker_info_cache.get(leader_id)
             if not broker_info:
                 raise ValueError(f"Broker {leader_id} not found after refresh.")
@@ -58,7 +60,7 @@ class ClusterManager:
         conn = self._broker_connections.get((host, port))
         if not conn or not conn.is_connected:
             print(
-                f"Producer: Creating new connection to leader {leader_id} at {host}:{port}"
+                f"ClusterManager: Creating new connection to leader {leader_id} at {host}:{port}"
             )
             conn = TinyStreamAPI(host, port, serializer=self.serializer)
             self._broker_connections[(host, port)] = conn
@@ -71,7 +73,7 @@ class ClusterManager:
         if self.mode != "cluster":
             return
 
-        print("Producer: Invalidating caches due to error.")
+        print("ClusterManager: Invalidating caches due to error.")
 
         self._topic_metadata_cache.clear()
         self._broker_info_cache.clear()
@@ -81,4 +83,26 @@ class ClusterManager:
             if conn_key in self._broker_connections:
                 await self._broker_connections.pop(conn_key).close()
 
-        await self._refresh_cluster_metadata()
+        await self.refresh_cluster_metadata()
+
+    async def refresh_cluster_metadata(self) -> None:
+        if self.mode != "cluster":
+            return
+
+        async with self._metadata_lock:
+            try:
+                await self._controller_connection.ensure_connected()  # type: ignore
+                response = await self._controller_connection.send_request(  # type: ignore
+                    {"command": "get_cluster_metadata"}
+                )
+                if response.get("status") == "ok":
+                    metadata = response["metadata"]
+                    self._broker_info_cache = metadata.get("brokers", {})
+                    self._topic_metadata_cache = metadata.get("partitions", {})
+                    print("[ClusterManager]: Metadata refreshed.")
+                else:
+                    print(
+                        f"[ClusterManager]: Failed to refresh metadata: {response.get('message')}"
+                    )
+            except Exception as e:
+                print(f"[ClusterManager]: Error refreshing metadata: {e}")
