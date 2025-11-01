@@ -1,109 +1,43 @@
 import asyncio
 import hashlib
-from typing import Any, Optional, Dict, Tuple
+import random
+import string
+import argparse
+from typing import Any, Optional, Dict
 
-from tinystream import DEFAULT_CONFIG_PATH
-from tinystream.client.connection import TinyStreamAPI
 from tinystream.cluster_manager import ClusterManager
-from tinystream.config.parser import TinyStreamConfig
+from tinystream.config.manager import ConfigManager
 from tinystream.serializer.base import AbstractSerializer
 from tinystream.utils.serlializer import init_serializer
+from tinystream.utils.env import env_default
 
 
 class Producer:
-    """
-    Manages connections and provides a `send` method.
-    Supports two modes:
-    1.  "single": Connects directly to a single broker.
-    2.  "cluster": Connects to a controller to discover leader brokers.
-    """
-
-    def __init__(self, config: TinyStreamConfig) -> None:
+    def __init__(self, config: ConfigManager) -> None:
         self.config = config
-        self.mode = config.mode
-
-        self.serializer_config = config.get_serialization_config()
+        self.serializer_config = config.serialization
 
         self.serializer: AbstractSerializer = init_serializer(
             self.serializer_config.get("type", "messagepack")
         )
 
-        if self.mode == "cluster":
-            controller_config = config.get_controller_config()
-            self.controller_host = controller_config.get("host")
-            self.controller_port = controller_config.get("port")
-            self._controller_connection: Optional[TinyStreamAPI] = TinyStreamAPI(
-                self.controller_host,  # type: ignore
-                self.controller_port,  # type: ignore
-                serializer=self.serializer,  # type: ignore
-            )
-
-            self._topic_metadata_cache: Dict[str, Dict[int, Any]] = {}
-            self._broker_info_cache: Dict[int, Any] = {}
-            self._broker_connections: Dict[Tuple[str, int], TinyStreamAPI] = {}
-            self._metadata_lock = asyncio.Lock()
-            self.cluster_manager = ClusterManager(
-                self.mode,
-                self._topic_metadata_cache,
-                self._broker_info_cache,
-                self._broker_connections,
-                self.serializer,
-                self._metadata_lock,
-                self._controller_connection,
-            )
-
-        else:
-            self.mode = "single"
-            broker_config = config.get_broker_config()
-            broker_host = broker_config.get("host")
-            broker_port = broker_config.get("port")
-            self._single_broker_connection = TinyStreamAPI(
-                broker_host,  # type: ignore
-                broker_port,  # type: ignore
-                serializer=self.serializer,  # type: ignore
-            )
-            self._default_partition_count = 1
+        self.cluster_manager = ClusterManager(
+            config=config,
+            serializer=self.serializer,
+        )
 
     async def is_connected(self) -> bool:
-        if self.mode == "cluster":
-            if (
-                not self._controller_connection
-                or not self._controller_connection.is_connected
-            ):
-                return False
-            for conn in self._broker_connections.values():
-                if not conn.is_connected:
-                    return False
-            return True
-        else:
-            return self._single_broker_connection.is_connected
+        return await self.cluster_manager.is_connected()
 
     async def connect(self) -> None:
-        """Explicitly connects to the controller or the single broker."""
-        if self.mode == "cluster":
-            print("[Producer] (Cluster Mode): Connecting to controller...")
-            await self._controller_connection.ensure_connected()  # type: ignore
-            await self.cluster_manager.refresh_cluster_metadata()
-
-        elif self.mode == "single":
-            print("[Producer] (Single Mode): Connecting to broker...")
-            await self._single_broker_connection.ensure_connected()
+        """Explicitly connects to the controller."""
+        print("[Producer]: Connecting...")
+        await self.cluster_manager.connect()
 
     async def close(self) -> None:
         """Closes all active connections."""
         print("Closing producer connections...")
-        if self.mode == "cluster":
-            if self._controller_connection:
-                await self._controller_connection.close()
-            for conn in self._broker_connections.values():
-                await conn.close()
-            self._broker_connections.clear()
-            self._topic_metadata_cache.clear()
-            self._broker_info_cache.clear()
-
-        elif self.mode == "single":
-            if self._single_broker_connection:
-                await self._single_broker_connection.close()
+        await self.cluster_manager.close()
 
     @staticmethod
     def _get_partition_id(key: Optional[bytes], partition_count: int) -> int:
@@ -119,24 +53,15 @@ class Producer:
         return hash_int % partition_count
 
     async def _get_partition_count(self, topic: str) -> int:
-        """Gets partition count for a topic based on mode."""
-        if self.mode == "cluster":
-            if topic not in self._topic_metadata_cache:
-                await self.cluster_manager.refresh_cluster_metadata()
-
-            topic_partitions = self.cluster_manager._topic_metadata_cache.get(topic)
-            if not topic_partitions:
-                raise ValueError(f"Topic '{topic}' not found in cluster metadata.")
-            return len(topic_partitions)
-        else:
-            return self._default_partition_count
+        """Gets partition count for a topic from the cluster."""
+        topic_partitions = await self.cluster_manager.get_topic_metadata(topic)
+        return len(topic_partitions)
 
     async def send(
         self, topic: str, data: Any, key: Optional[str] = None, retries: int = 3
     ) -> Dict[str, Any]:
         """
         Sends a message to a topic.
-        Behavior depends on the producer's mode (single vs. cluster).
         """
         key_bytes = key.encode("utf-8") if key else None
 
@@ -149,48 +74,17 @@ class Producer:
             "data": data,
         }
 
-        if self.mode == "cluster":
-            return await self._send_cluster(request, retries)
-        else:
-            return await self._send_single(request)
+        return await self._send_cluster(request, retries)
 
     async def create_topic(
         self, topic: str, partition_count: int, replication_factor: int = 1
     ) -> Dict[str, Any]:
         """
         Creates a new topic in the cluster.
-        Only applicable in cluster mode.
         """
-
-        request = {
-            "command": "create_topic",
-            "topic": topic,
-            "partition_count": partition_count,
-            "replication_factor": replication_factor,
-        }
-
-        await self._controller_connection.ensure_connected()  # type: ignore
-        response = await self._controller_connection.send_request(  # type: ignore
-            request
+        return await self.cluster_manager.create_topic(
+            topic, partition_count, replication_factor
         )
-
-        if response.get("status") == "ok" and self.mode == "cluster":
-            await self.cluster_manager.refresh_cluster_metadata()
-
-        return response
-
-    async def _send_single(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handles sending in single-broker mode."""
-        try:
-            await self._single_broker_connection.ensure_connected()
-            response = await self._single_broker_connection.send_request(request)
-            return response
-        except (ConnectionError, asyncio.TimeoutError) as e:
-            print(f"[Producer] (Single Mode): Connection error: {e}")
-            raise e
-        except Exception as e:
-            print(f"[Producer] (Single Mode): Unexpected error: {e}")
-            raise e
 
     async def _send_cluster(
         self, request: Dict[str, Any], retries: int
@@ -229,25 +123,34 @@ class Producer:
         )
 
 
-async def main(
-    config: Optional[str] = DEFAULT_CONFIG_PATH, mode: str = "single"
-) -> None:
-    config = TinyStreamConfig.from_ini(config or DEFAULT_CONFIG_PATH)  # type: ignore
-    config.mode = mode  # type: ignore
-    producer = Producer(config=config)  # type: ignore
+async def main(config: ConfigManager) -> None:
+    producer = Producer(config=config)
 
-    dummy_events = [{"user": "alice", "action": "clicks", "item": "item_A"}]
+    def _random_payload(size_bytes: int = 5_000) -> str:
+        return "".join(
+            random.choices(string.ascii_letters + string.digits, k=size_bytes)
+        )
+
+    dummy_events = [
+        {
+            "user": f"user_{i}",
+            "action": "clicks",
+            "item": "item_A",
+            "payload": _random_payload(),
+        }
+        for i in range(1)
+    ]
 
     try:
         await producer.connect()
-        print("Producer connected. Sending messages... (Press Ctrl+C to stop)")
+        print("Producer connected in cluster mode. Sending... (Press Ctrl+C to stop)")
 
         message_count = 0
         while True:
             event = dummy_events[message_count % len(dummy_events)]
             event["message_id"] = str(message_count)
 
-            print(f"Sending: {event}")
+            print(f"Sending: {event['message_id']}")
             response = await producer.send(
                 topic=event["action"], data=event, key=event["user"]
             )
@@ -256,9 +159,7 @@ async def main(
             message_count += 1
             await asyncio.sleep(1)
     except ConnectionRefusedError:
-        print("\n[ERROR] Could not connect to broker.")
-        print("Please ensure the broker is running in another terminal:")
-        print("  python -m tinystream.broker")
+        print("\n[ERROR] Could not connect to controller.")
     except KeyboardInterrupt:
         print("\n\nStopping producer... (Ctrl+C pressed)")
     except Exception as e:
@@ -272,25 +173,30 @@ async def main(
 
 
 if __name__ == "__main__":
-    import sys
-    import argparse
-
-    def print_usage():
-        print(
-            "Usage: python -m tinystream.client.producer --config <config_file_path> --mode <single|cluster>"
-        )
-        sys.exit(1)
-
     parser = argparse.ArgumentParser(description="TinyStream Producer")
+
+    parser.add_argument(
+        "--controller-uri",
+        type=str,
+        default=env_default("TINYSTREAM_CONTROLLER_URI")(),
+        help="Controller RPC URI (e.g., localhost:9093). Overrides config.",
+    )
+    parser.add_argument(
+        "--metastore-uri",
+        type=str,
+        default=env_default("TINYSTREAM_METASTORE_URI")(),
+        help="Metastore HTTP API URI. Overrides config.",
+    )
+
     parser.add_argument(
         "--config",
         type=str,
-        default=DEFAULT_CONFIG_PATH,
-        help="Path to TinyStream configuration file",
+        default=env_default("TINYSTREAM_CONFIG")(),
+        help="Path to a user config file. Overrides default config.",
     )
-    parser.add_argument(
-        "--mode", type=str, default="single", choices=["single", "cluster"]
-    )
+
     args = parser.parse_args()
-    config_path = args.config
-    asyncio.run(main(config=config_path, mode=args.mode))
+
+    config_manager = ConfigManager(args, component_type="broker")
+
+    asyncio.run(main(config=config_manager))

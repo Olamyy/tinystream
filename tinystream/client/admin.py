@@ -10,11 +10,11 @@ class AdminClient:
     Connects to the Controller (or a single-mode Broker) via its HTTP API.
     """
 
-    def __init__(self, controller_addr: str):
-        if not controller_addr.startswith(("http://", "https://")):
-            self.controller_addr = f"http://{controller_addr}"
+    def __init__(self, metastore_api_address: str):
+        if not metastore_api_address.startswith(("http://", "https://")):
+            self.controller_addr = f"http://{metastore_api_address}"
         else:
-            self.controller_addr = controller_addr
+            self.controller_addr = metastore_api_address
 
         self.api_base = f"{self.controller_addr}/api/v1/admin"
 
@@ -32,27 +32,25 @@ class AdminClient:
         except httpx.HTTPStatusError as e:
             try:
                 error_data = e.response.json()
-                print(f"Error: {error_data}", file=sys.stderr)
+                print(f"Error: {error_data}")
             except Exception:
-                print(
-                    f"HTTP Error: {e.response.status_code} - {e.response.text}",
-                    file=sys.stderr,
-                )
+                print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
         except httpx.RequestError as e:
-            print(
-                f"Connection Error: Failed to connect to {e.request.url}.",
-                file=sys.stderr,
-            )
-            print(
-                "Please ensure the Controller is running and the address is correct.",
-                file=sys.stderr,
-            )
+            print(f"Connection Error: Failed to connect to {e.request.url}.")
+            print("Please ensure the Controller is running and the address is correct.")
         except Exception as e:
-            print(f"An unexpected error occurred: {e}", file=sys.stderr)
+            print(f"An unexpected error occurred: {e}")
 
         return None
 
-    async def create_topic(self, name: str, partitions: int, replication_factor: int):
+    async def create_topic(
+        self,
+        name: str,
+        partitions: int,
+        replication_factor: int,
+        retention_ms: int = 604800000,
+        retention_bytes: int = -1,
+    ):
         """
         Sends a request to the controller to create a new topic.
         """
@@ -64,6 +62,8 @@ class AdminClient:
             "topic_name": name,
             "partition_count": partitions,
             "replication_factor": replication_factor,
+            "retention_ms": retention_ms,
+            "retention_bytes": retention_bytes,
         }
 
         try:
@@ -74,7 +74,7 @@ class AdminClient:
                 f"Connection Error: Could not connect to controller at {self.controller_addr}",
                 file=sys.stderr,
             )
-            print("Please ensure the controller is running.", file=sys.stderr)
+            print("Please ensure the controller is running.")
             sys.exit(1)
 
     async def list_topics(self):
@@ -116,7 +116,7 @@ class AdminClient:
 
             print("\nRegistered Brokers:")
             for broker_id, info in brokers.items():
-                status = "ALIVE" if info.get("is_alive") else "DEAD"
+                status = info.get("status")
                 print(
                     f"  - Broker {broker_id} ({info.get('host')}:{info.get('port')}) - {status}"
                 )
@@ -134,7 +134,7 @@ async def main():
 
     parser = argparse.ArgumentParser(description="TinyStream Admin Client")
     parser.add_argument(
-        "--controller",
+        "--metastore",
         default="localhost:3200",
         help="Controller address (e.g., localhost:6000). (Default: %(default)s)",
     )
@@ -151,6 +151,15 @@ async def main():
     create_parser.add_argument(
         "--replication-factor", required=True, type=int, help="Replication factor"
     )
+    create_parser.add_argument(
+        "--retention-ms",
+        type=int,
+        default=1800,
+        help="Retention time in milliseconds",
+    )
+    create_parser.add_argument(
+        "--retention-bytes", type=int, default=10000, help="Retention size in bytes"
+    )
 
     subparsers.add_parser("list-topics", help="List all topics in the cluster")
 
@@ -158,7 +167,7 @@ async def main():
 
     args = parser.parse_args()
 
-    client = AdminClient(controller_addr=args.controller)
+    client = AdminClient(metastore_api_address=args.metastore)
 
     try:
         if args.action == "create-topic":
@@ -166,20 +175,22 @@ async def main():
                 name=args.name,
                 partitions=args.partitions,
                 replication_factor=args.replication_factor,
+                retention_ms=args.retention_ms,
+                retention_bytes=args.retention_bytes,
             )
         elif args.action == "list-topics":
             await client.list_topics()
         elif args.action == "describe-cluster":
             await client.describe_cluster()
         else:
-            print(f"Unknown action: {args.action}", file=sys.stderr)
+            print(f"Unknown action: {args.action}")
             parser.print_help()
             sys.exit(1)
 
         await client.close()
 
     except Exception as e:
-        print(f"\nAn unexpected critical error occurred: {e}", file=sys.stderr)
+        print(f"\nAn unexpected critical error occurred: {e}")
         sys.exit(1)
     finally:
         await client.close()

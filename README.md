@@ -63,9 +63,9 @@ uv run python -m tinystream.admin create-topic \
 
 ```python
 from tinystream.client.producer import Producer
-from tinystream.config.parser import TinyStreamConfig
+from tinystream.config.manager import ConfigManager
 
-config = TinyStreamConfig.from_default_config_file()
+config = ConfigManager.from_default_config_file()
 config.mode = "cluster"
 producer = Producer(config=config)
 
@@ -84,9 +84,9 @@ print("Done.")
 ```python
 
 from tinystream.client.consumer import Consumer
-from tinystream.config.parser import TinyStreamConfig
+from tinystream.config.manager import ConfigManager
 
-config = TinyStreamConfig.from_default_config_file()
+config = ConfigManager.from_default_config_file()
 
 config.mode = "cluster"
 consumer = Consumer(config=config, group_id="test-group")

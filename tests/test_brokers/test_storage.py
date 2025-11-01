@@ -3,7 +3,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from tinystream.storage import FileLogStorage
+from tinystream.storage import SegmentedLogStorage
 
 
 class TestFileLogStorage(unittest.TestCase):
@@ -11,9 +11,7 @@ class TestFileLogStorage(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_path = Path(self.temp_dir.name)
 
-        self.log_file = self.temp_path / "test_partition.log"
-
-        self.storage = FileLogStorage(log_file_path=self.log_file)
+        self.storage = SegmentedLogStorage(partition_path=self.temp_path)
 
         asyncio.run(self.storage.ensure_ready())
 
@@ -22,11 +20,9 @@ class TestFileLogStorage(unittest.TestCase):
 
     def test_storage_ensure_ready(self):
         new_log_dir = self.temp_path / "data"
-        new_log_file = new_log_dir / "test.log"
-
         self.assertFalse(new_log_dir.exists())
 
-        new_storage = FileLogStorage(log_file_path=new_log_file)
+        new_storage = SegmentedLogStorage(partition_path=new_log_dir)
         asyncio.run(new_storage.ensure_ready())
 
         self.assertTrue(new_log_dir.exists())

@@ -1,10 +1,11 @@
 import asyncio
-from typing import Any, List
+import time
+from typing import Any, List, Optional
 from pathlib import Path
 
 from tinystream.partitions.base import BasePartition
 from tinystream.serializer.msg_pack import MSGPackSerializer
-from tinystream.storage.storage import FileLogStorage
+from tinystream.storage.segemented import SegmentedLogStorage
 
 
 class SingleLogPartition(BasePartition):
@@ -19,23 +20,78 @@ class SingleLogPartition(BasePartition):
         self.topic_name = topic_name
         self.partition_id = partition_id
 
-        log_file = base_log_dir / topic_name / f"{partition_id}.log"
-        self.storage = storage or FileLogStorage(log_file_path=log_file)
+        log_directory = f"{base_log_dir}/{topic_name}"
+        self.storage = storage or SegmentedLogStorage(
+            partition_path=Path(log_directory)
+        )
         self.serializer = serializer or MSGPackSerializer()
 
-        # The core of the partition: mapping logical offsets to physical offsets.
-        # index[0] = physical offset of the 1st message
-        # index[1] = physical offset of the 2nd message
+        super().__init__(
+            topic_name=self.topic_name,
+            partition_id=self.partition_id,
+            storage=self.storage,
+            serializer=self.serializer,
+        )
+
         self._index: List[int] = []
         self._lock = asyncio.Lock()
         self._next_logical_offset = 0
+        self.role: str = "follower"
+        self.retention_ms: Optional[int] = None
+        self.retention_bytes: Optional[int] = None
+
+    def update_policy(self, role: str, retention_ms: int, retention_bytes: int):
+        """
+        Updates the partition's live policy from the controller.
+        """
+        self.role = role
+        self.retention_ms = retention_ms
+        self.retention_bytes = retention_bytes
+
+    async def enforce_retention(self):
+        if self.retention_ms is None and self.retention_bytes is None:
+            return
+
+        inactive_segments = await self.storage.get_inactive_segments()
+
+        if self.retention_ms is not None:
+            print("Checking time retention:", self.retention_ms)
+            now = time.time() * 1000
+            cutoff_time = now - self.retention_ms
+            print("[Time Retention] Current time (ms):", cutoff_time)
+
+            for segment in inactive_segments:
+                print(
+                    "Segment:",
+                    segment.log_path.name,
+                    "Last Modified:",
+                    segment.last_modified_timestamp,
+                )
+                if segment.last_modified_timestamp < cutoff_time:
+                    print(
+                        f"[{self.topic_name}-{self.partition_id}] Deleting segment {segment.log_path.name} (Time Limit)"
+                    )
+                    await self.storage.delete_segment(segment)
+
+        if self.retention_bytes is not None and self.retention_bytes > 0:
+            print("Checking size retention:", self.retention_bytes)
+            total_size = await self.storage.get_total_size()
+            print("[Size Retention] Current total size:", total_size)
+
+            segments_to_delete = sorted(inactive_segments, key=lambda s: s.base_offset)
+
+            while total_size > self.retention_bytes:
+                if not segments_to_delete:
+                    break
+
+                segment = segments_to_delete.pop(0)
+                print(
+                    f"[{self.topic_name}-{self.partition_id}] Deleting segment {segment.name} (Size Limit)"
+                )
+                await self.storage.delete_segment(segment)
+                total_size -= segment.size
 
     async def load(self) -> None:
-        """
-        Loads the partition by replaying its log file to rebuild
-        the in-memory offset index. This must be called before
-        the partition can be used.
-        """
         async with self._lock:
             await self.storage.ensure_ready()
 

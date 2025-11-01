@@ -1,6 +1,5 @@
 import json
 from typing import Dict
-
 from tinystream.models import PartitionMetadata, TopicMetadata, BrokerInfo
 
 
@@ -17,7 +16,14 @@ class TopicManager:
         self.topics = topics
         self._lock = lock
 
-    async def create_topic(self, name: str, partitions: int, replication_factor: int):
+    async def create_topic(
+        self,
+        name: str,
+        partitions: int,
+        replication_factor: int,
+        retention_ms: int = 1800,
+        retention_bytes: int = 10000,
+    ):
         if not self.db_connection:
             raise Exception("Database not connected")
 
@@ -28,7 +34,12 @@ class TopicManager:
                 f"to satisfy replication factor ({replication_factor})."
             )
 
-        new_topic_metadata = TopicMetadata(name=name, partitions={})
+        new_topic_metadata = TopicMetadata(
+            name=name,
+            partitions={},
+            retention_ms=retention_ms,
+            retention_bytes=retention_bytes,
+        )
         partition_data_to_insert = []
 
         for partition_id in range(partitions):
@@ -38,7 +49,6 @@ class TopicManager:
                 replicas.append(brokers_alive[broker_index])
 
             leader = replicas[0]
-
             replicas_json = json.dumps(replicas)
 
             partition_metadata = PartitionMetadata(
@@ -54,8 +64,18 @@ class TopicManager:
 
             try:
                 await self.db_connection.execute(
-                    "INSERT INTO topics (topic_name, partition_count, replication_factor) VALUES (?, ?, ?)",
-                    (name, partitions, replication_factor),
+                    """
+                    INSERT INTO topics (topic_name, partition_count, replication_factor,
+                                        retention_ms, retention_bytes)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        name,
+                        partitions,
+                        replication_factor,
+                        retention_ms,
+                        retention_bytes,
+                    ),
                 )
 
                 await self.db_connection.executemany(

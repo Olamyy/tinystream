@@ -1,3 +1,3 @@
-from tinystream.config.parser import TinyStreamConfig
+from tinystream.config.manager import ConfigManager
 
-__all__ = ["TinyStreamConfig"]
+__all__ = ["ConfigManager"]

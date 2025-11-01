@@ -12,6 +12,7 @@ class BrokerInfo:
     last_heartbeat: float = time.time()
     is_alive: bool = True
     status: Literal["ALIVE", "TIMED_OUT", "SHUTDOWN"] = "ALIVE"
+    failed_since: Optional[float] = None
 
 
 @dataclass
@@ -25,6 +26,8 @@ class PartitionMetadata:
 class TopicMetadata:
     name: str
     partitions: Dict[int, PartitionMetadata]
+    retention_ms: int = 1800
+    retention_bytes: int = 10000
 
 
 class CreateTopicRequest(BaseModel):
@@ -37,6 +40,12 @@ class CreateTopicRequest(BaseModel):
     replication_factor: int = Field(
         ..., gt=0, description="Replication factor (must be >= 1)."
     )
+    retention_ms: Optional[int] = Field(
+        gt=0, description="Retention time in ms.", default=1800
+    )
+    retention_bytes: Optional[int] = Field(
+        gt=-1, description="Retention time in bytes.", default=10000
+    )
 
 
 class TopicInfo(BaseModel):
@@ -46,6 +55,8 @@ class TopicInfo(BaseModel):
 
     name: str
     partition_count: int
+    retention_ms: int = 1800
+    retention_bytes: int = 10000
 
 
 class ListTopicsResponse(BaseModel):

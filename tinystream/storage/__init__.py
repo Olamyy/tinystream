@@ -1,5 +1,4 @@
-from tinystream.storage.storage import FileLogStorage
+from tinystream.storage.single import SingleLogStorage
+from tinystream.storage.segemented import SegmentedLogStorage
 
-__all__ = [
-    "FileLogStorage",
-]
+__all__ = ["SegmentedLogStorage", "SingleLogStorage"]
