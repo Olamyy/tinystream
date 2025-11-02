@@ -9,9 +9,9 @@ TinyStream is a `lightweight` streaming engine in Python, inspired by Apache Kaf
 - Pluggable Storage: Supports SingleLogStorage (one file) or SegmentedLogStorage (retention-ready).
 - Controller Cluster: A controller-based architecture (no "single mode") manages cluster state.
 - Metadata & Liveness: The Controller tracks broker liveness (via heartbeats) and partition assignments.
-- Leader Election: The Controller automatically elects new leaders when brokers fail [cite: controller.py, _handle_broker_failure].
+- Leader Election: The Controller automatically elects new leaders when brokers fail
 - Producer/Consumer APIs: Asynchronous clients for producing and consuming data.
-- Log Retention: Supports per-topic log retention by time (retention_ms) or size (retention_bytes) [cite: topic_manager.py, create_topic].
+- Log Retention: Supports per-topic log retention by time (retention_ms) or size (retention_bytes)
 - HTTP Admin Dashboard: A built-in, lightweight web UI (via FastAPI) to view cluster status.
 
 
