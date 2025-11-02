@@ -8,10 +8,10 @@ from pathlib import Path
 
 from tinystream.metastore import Metastore
 from tinystream.models import BrokerInfo, TopicMetadata, PartitionMetadata
-from tinystream import DEFAULT_CONFIG_PATH
+from tinystream import DEFAULT_CONTROLLER_CONFIG_PATH
 from tinystream.client.base import BaseAsyncClient
 from tinystream.client.topic_manager import TopicManager
-from tinystream.config.parser import TinyStreamConfig
+from tinystream.config.manager import ConfigManager
 from tinystream.serializer.base import AbstractSerializer
 
 
@@ -20,10 +20,10 @@ class Controller(BaseAsyncClient):
     Manages cluster metadata, brokers, and leader elections.
     """
 
-    def __init__(self, config: TinyStreamConfig):
+    def __init__(self, config: ConfigManager):
         self.config = config
 
-        controller_config = config.get_controller_config()
+        controller_config = config.controller_config
         self.host = controller_config["host"]
         self.port = int(controller_config["port"])
         self.heartbeat_timeout = float(controller_config["heartbeat_timeout"])
@@ -97,8 +97,13 @@ class Controller(BaseAsyncClient):
 
             async with self.db_connection.execute("SELECT * FROM topics") as t_cursor:
                 async for row in t_cursor:
-                    name, p_count, r_factor = row
-                    self.topics[name] = TopicMetadata(name=name, partitions={})
+                    name, p_count, r_factor, retention_ms, retention_bytes = row
+                    self.topics[name] = TopicMetadata(
+                        name=name,
+                        partitions={},
+                        retention_ms=retention_ms,
+                        retention_bytes=retention_bytes,
+                    )
 
             async with self.db_connection.execute(
                 "SELECT * FROM partitions"
@@ -227,6 +232,16 @@ class Controller(BaseAsyncClient):
                 broker_id=broker_id, host=host, port=port
             )
             print(f"[Controller] Registered broker {broker_id} at {host}:{port}")
+            print(
+                f"[Controller] Checking for partitions to assign to new broker {broker_id}..."
+            )
+            for topic in self.topics.values():
+                for part in topic.partitions.values():
+                    if broker_id in part.replicas and part.leader is None:
+                        print(
+                            f"[Controller] Triggering election for {topic.name}-{part.partition_id}"
+                        )
+                        await self._elect_leader(topic.name, part.partition_id)
         return self
 
     async def _handle_deregister(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -248,7 +263,6 @@ class Controller(BaseAsyncClient):
                 self.brokers[broker_id].is_alive = True
                 # TODO: Trigger rebalancing
 
-    # --- NEW HELPER METHOD ---
     async def _get_assignments_for_broker(self, broker_id: int) -> list[dict]:
         """
         Scans the in-memory state for all partitions assigned to a broker.
@@ -261,11 +275,15 @@ class Controller(BaseAsyncClient):
                     if broker_id in part_meta.replicas:
                         role = "leader" if broker_id == part_meta.leader else "follower"
                         assignments.append(
-                            {"topic": topic_name, "partition_id": part_id, "role": role}
+                            {
+                                "topic": topic_name,
+                                "partition_id": part_id,
+                                "role": role,
+                                "retention_ms": topic_meta.retention_ms,
+                                "retention_bytes": topic_meta.retention_bytes,
+                            }
                         )
         return assignments
-
-    # --- END NEW HELPER METHOD ---
 
     async def _elect_leader(self, topic: str, partition_id: int) -> Optional[int]:
         if not self.db_connection:
@@ -304,9 +322,12 @@ class Controller(BaseAsyncClient):
             dead_broker_ids = []
             for broker in self.brokers.values():
                 if broker.status == "ALIVE" and (
-                    current_time - broker.last_heartkey > self.heartbeat_timeout
+                    current_time - broker.last_heartbeat > self.heartbeat_timeout
                 ):
                     print(f"[Controller] Broker {broker.broker_id} timed out.")
+                    broker.status = "TIMED_OUT"
+                    broker.failed_since = current_time
+                    broker.is_alive = False
                     dead_broker_ids.append(broker.broker_id)
 
             for broker_id in dead_broker_ids:
@@ -380,11 +401,14 @@ class Controller(BaseAsyncClient):
             return None
 
 
-async def main():
+async def main(_config: str):
     """
     Custom startup script to initialize, register brokers, and run the server.
     """
-    config = TinyStreamConfig.from_ini(DEFAULT_CONFIG_PATH)
+    config = ConfigManager(
+        args=argparse.Namespace(config=_config),
+        component_type="controller",
+    )
     controller = Controller(config=config)
     try:
         await controller.start()
@@ -400,7 +424,18 @@ async def main():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Start TinyStream controller")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=DEFAULT_CONTROLLER_CONFIG_PATH,
+        help=f"Config file path (default: {DEFAULT_CONTROLLER_CONFIG_PATH})",
+    )
+    args = parser.parse_args()
+
     try:
-        asyncio.run(main())
+        asyncio.run(main(_config=args.config))
     except KeyboardInterrupt:
         print("\n[Controller] Shutdown forced.")

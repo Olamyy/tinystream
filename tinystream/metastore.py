@@ -1,6 +1,11 @@
+import time
+from pathlib import Path
+
 import uvicorn
 import asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from typing import Dict
 
 from tinystream.models import (
@@ -11,6 +16,9 @@ from tinystream.models import (
 )
 from tinystream.client.topic_manager import TopicManager
 from tinystream.models import BrokerInfo, TopicMetadata
+
+template_dir = Path(__file__).parent.parent / "ui"
+templates = Jinja2Templates(directory=str(template_dir))
 
 
 class Metastore:
@@ -46,6 +54,9 @@ class Metastore:
 
     def _setup_api_routes(self):
         """Attaches this class's methods to the FastAPI app routes."""
+        self.api_app.get("/dashboard", response_class=HTMLResponse)(
+            self._api_serve_dashboard
+        )
         self.api_app.post("/api/v1/admin/topics", status_code=201)(
             self._api_create_topic
         )
@@ -66,10 +77,12 @@ class Metastore:
             port=self.port,
             loop="asyncio",
             log_level="info",
+            reload=True,
         )
         self.api_server = uvicorn.Server(config)
 
         try:
+            print(f"[MetastoreAPI] API docs at http://localhost:{self.port}/docs")
             await self.api_server.serve()
         except asyncio.CancelledError:
             print("[MetastoreAPI] Server task cancelled.")
@@ -85,7 +98,11 @@ class Metastore:
     async def _api_create_topic(self, request: CreateTopicRequest):
         try:
             await self.topic_manager.create_topic(
-                request.topic_name, request.partition_count, request.replication_factor
+                request.topic_name,
+                request.partition_count,
+                request.replication_factor,
+                request.retention_ms,  # type: ignore
+                request.retention_bytes,  # type: ignore
             )
             return {
                 "status": "success",
@@ -110,11 +127,41 @@ class Metastore:
     async def _api_describe_cluster(self) -> ClusterInfoResponse:
         async with self._lock:
             response_brokers = {}
+            current_time = time.time()
             for broker_id, info in self.brokers.items():
+                last_heartbeat = current_time - info.last_heartbeat
+                failed_since = last_heartbeat - info.last_heartbeat
                 response_brokers[broker_id] = BrokerInfo(
                     broker_id=info.broker_id,
                     host=info.host,
                     port=info.port,
                     is_alive=info.is_alive,
+                    last_heartbeat=last_heartbeat,
+                    failed_since=failed_since,
+                    status=info.status,
                 )
             return ClusterInfoResponse(brokers=response_brokers)
+
+    async def _api_serve_dashboard(self, request: Request):
+        """
+        Gathers live data and renders the HTML dashboard.
+        """
+        async with self._lock:
+            brokers_data = self.brokers
+            topics_data = self.topics
+
+        rendered_topics = {}
+        for name, meta in topics_data.items():
+            print("name_name", name, meta)
+            rendered_topics[name] = {
+                "name": name,
+                "partitions": meta.partitions,
+                "replication_factor": meta.replication_factor,
+                "retention_ms": meta.retention_ms,
+                "retention_bytes": meta.retention_bytes,
+            }
+
+        return templates.TemplateResponse(
+            "dashboard.html",
+            {"request": request, "brokers": brokers_data, "topics": topics_data},
+        )

@@ -1,219 +1,55 @@
 import asyncio
 import uuid
 from typing import Any, Dict, List, Tuple, Optional
-
-from tinystream import DEFAULT_CONFIG_PATH
-from tinystream.client.connection import TinyStreamAPI
-from tinystream.config.parser import TinyStreamConfig
+import argparse
+from tinystream.cluster_manager import ClusterManager
+from tinystream.config.manager import ConfigManager
 from tinystream.serializer.base import AbstractSerializer
 from tinystream.utils.serlializer import init_serializer
+from tinystream.utils.env import env_default
 
 
 class Consumer:
-    """
-    A stateful consumer that tracks its own offsets for assigned partitions.
-    Supports both "single" broker and "cluster" (controller-aware) modes.
-
-    """
-
     def __init__(
         self,
         group_id: str,
-        config: TinyStreamConfig,
+        config: ConfigManager,
     ) -> None:
         self.group_id = group_id
         self.config = config
-        self.mode = self.config.mode
 
-        serializer_config = config.get_serialization_config()
+        serializer_config = config.serialization
         self.serializer: AbstractSerializer = init_serializer(
             serializer_config.get("type", "messagepack")
         )
 
-        if self.mode == "cluster":
-            controller_config = config.get_controller_config()
-            self.controller_host = controller_config.get("host")
-            self.controller_port = controller_config.get("port")
-            self.controller_connection: Optional[TinyStreamAPI] = TinyStreamAPI(
-                self.controller_host,  # type: ignore
-                self.controller_port,  # type: ignore
-                serializer=self.serializer,  # type: ignore
-            )
+        self.cluster_manager = ClusterManager(
+            config=config,
+            serializer=self.serializer,
+        )
 
-            self._topic_metadata_cache: Dict[
-                str, Dict[int, Any]
-            ] = {}  # {topic -> {part_id -> {leader, replicas}}}
-            self._broker_info_cache: Dict[int, Any] = {}  # {broker_id -> {host, port}}
-            self._broker_connections: Dict[
-                Tuple[str, int], TinyStreamAPI
-            ] = {}  # {(host, port) -> connection}
-            self._metadata_lock = asyncio.Lock()
-
-        else:
-            self.mode = "single"
-            broker_config = config.get_broker_config()
-            broker_host = broker_config.get("host")
-            broker_port = broker_config.get("port")
-            self._single_broker_connection = TinyStreamAPI(
-                broker_host,  # type: ignore
-                broker_port,  # type: ignore
-                serializer=self.serializer,  # type: ignore
-            )
-
-        # { (topic, partition_id): next_offset }
         self._assignments: Dict[Tuple[str, int], int] = {}
-
         self._hwms: Dict[Tuple[str, int], int] = {}
 
     async def connect(self) -> None:
-        """Explicitly connects to the controller or the single broker."""
-        if self.mode == "cluster":
-            print("[Consumer] (Cluster Mode): Connecting to controller...")
-            await self.controller_connection.ensure_connected()  # type: ignore
-            await self.refresh_cluster_metadata()
-
-        elif self.mode == "single":
-            print("[Consumer] (Single Mode): Connecting to broker...")
-            await self._single_broker_connection.ensure_connected()
+        """Explicitly connects to the controller."""
+        print("[Consumer]: Connecting...")
+        await self.cluster_manager.connect()
 
     async def close(self) -> None:
         """Closes all active connections."""
         print("Closing consumer connections...")
-        if self.mode == "cluster":
-            if self.controller_connection:
-                await self.controller_connection.close()
-            for conn in self._broker_connections.values():
-                await conn.close()
-
-        elif self.mode == "single":
-            if self._single_broker_connection:
-                await self._single_broker_connection.close()
+        await self.cluster_manager.close()
 
     async def is_connected(self) -> bool:
         """Checks if the consumer is connected."""
-        if self.mode == "cluster":
-            if not self.controller_connection.is_connected:  # type: ignore
-                return False
-            for conn in self._broker_connections.values():
-                if not conn.is_connected:
-                    return False
-            return True
-
-        elif self.mode == "single":
-            return self._single_broker_connection.is_connected
-
-        return False
+        return await self.cluster_manager.is_connected()
 
     def assign(self, topic: str, partition: int = 0, start_offset: int = 0) -> None:
-        """
-        Assigns this consumer to a specific partition, starting from a given
-        offset. Call this *before* polling.
-        """
         key = (topic, partition)
         self._assignments[key] = start_offset
         self._hwms[key] = 0
         print(f"[Consumer] assigned to {topic}-{partition} at offset {start_offset}")
-
-    async def refresh_cluster_metadata(self) -> None:
-        """Fetches the latest metadata from the Controller."""
-        if self.mode != "cluster" or not self.controller_connection:
-            return
-
-        print("[Consumer] Refreshing cluster metadata...")
-        async with self._metadata_lock:
-            try:
-                resp = await self.controller_connection.send_request(
-                    {"command": "get_cluster_metadata"}
-                )
-                if resp.get("status") == "ok":
-                    metadata = resp.get("metadata", {})
-                    self._topic_metadata_cache = metadata.get("partitions", {})
-                    self._broker_info_cache = metadata.get("brokers", {})
-
-                    for conn in self._broker_connections.values():
-                        await conn.close()
-                    self._broker_connections.clear()
-                    print("[Consumer] Metadata refreshed.")
-                else:
-                    print(f"Failed to refresh metadata: {resp.get('message')}")
-            except Exception as e:
-                print(f"Error refreshing metadata: {e}")
-
-    async def invalidate_caches(self, conn: Optional[TinyStreamAPI] = None) -> None:
-        """Invalidates metadata and connection caches, forcing a refresh."""
-        print("[Consumer] Invalidating metadata caches...")
-        async with self._metadata_lock:
-            self._topic_metadata_cache.clear()
-            self._broker_info_cache.clear()
-
-            if conn:
-                key_to_remove = None
-                for k, v in self._broker_connections.items():
-                    if v == conn:
-                        key_to_remove = k
-                        break
-                if key_to_remove:
-                    await self._broker_connections[key_to_remove].close()
-                    del self._broker_connections[key_to_remove]
-            else:
-                for c in self._broker_connections.values():
-                    await c.close()
-                self._broker_connections.clear()
-
-    async def get_leader_connection(self, topic: str, partition: int) -> TinyStreamAPI:
-        """
-        Gets the correct broker connection for a partition leader.
-        Handles metadata refresh and connection caching.
-        """
-        if self.mode == "single":
-            await self._single_broker_connection.ensure_connected()  # type: ignore
-            return self._single_broker_connection
-
-        async with self._metadata_lock:
-            topic_info = self._topic_metadata_cache.get(topic)
-            if not topic_info:
-                print(f"No metadata for topic '{topic}', refreshing...")
-                await self.refresh_cluster_metadata()
-                topic_info = self._topic_metadata_cache.get(topic)
-
-            if not topic_info:
-                raise Exception(f"Topic not found after refresh: {topic}")
-
-            part_info = topic_info.get(partition)
-            if not part_info:
-                part_info = topic_info.get(partition)
-
-            if not part_info:
-                raise Exception(
-                    f"Partition not found after refresh: {topic}-{partition}"
-                )
-
-            leader_id = part_info.get("leader")
-            if leader_id is None:
-                raise Exception(f"No leader for partition: {topic}-{partition}")
-
-            broker_info = self._broker_info_cache.get(leader_id)
-            if not broker_info:
-                raise Exception(f"Broker info not found for leader ID: {leader_id}")
-
-            broker_host = broker_info.get("host")
-            broker_port = broker_info.get("data_port", broker_info.get("port"))
-
-            conn_key = (broker_host, broker_port)
-            if conn_key not in self._broker_connections:
-                print(
-                    f"Connecting to new broker for {topic}-{partition}: {broker_host}:{broker_port}"
-                )
-                conn = TinyStreamAPI(
-                    broker_host,  # type: ignore
-                    broker_port,  # type: ignore
-                    serializer=self.serializer,  # type: ignore
-                )
-                self._broker_connections[conn_key] = conn
-
-            conn = self._broker_connections[conn_key]
-            await conn.ensure_connected()
-            return conn
 
     async def _update_high_watermarks(self) -> None:
         """
@@ -221,7 +57,7 @@ class Consumer:
         """
         for topic, part in self._assignments.keys():
             try:
-                conn = await self.get_leader_connection(topic, part)
+                conn = await self.cluster_manager.get_leader_connection(topic, part)
 
                 resp = await conn.send_request(
                     {"command": "get_hwm", "topic": topic, "partition": part}
@@ -232,13 +68,11 @@ class Consumer:
                     print(
                         f"Failed to get HWM for {topic}-{part}: {resp.get('message')}"
                     )
-                    if self.mode == "cluster":
-                        await self.invalidate_caches(conn)
+                    await self.cluster_manager.invalidate_caches(conn)
 
             except Exception as e:
                 print(f"Failed to get HWM for {topic}-{part}: {e}")
-                if self.mode == "cluster":
-                    await self.invalidate_caches()
+                await self.cluster_manager.invalidate_caches()
 
     async def poll(self, max_messages: int = 100) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
@@ -256,7 +90,9 @@ class Consumer:
 
                 if next_offset < hwm:
                     try:
-                        conn = await self.get_leader_connection(topic, part)
+                        conn = await self.cluster_manager.get_leader_connection(
+                            topic, part
+                        )
 
                         resp = await conn.send_request(
                             {
@@ -276,14 +112,12 @@ class Consumer:
                                 f"Read error on {topic}-{part} at {next_offset}: {resp.get('message')}"
                             )
                             self._hwms[(topic, part)] = 0
-                            if self.mode == "cluster":
-                                await self.invalidate_caches(conn)
+                            await self.cluster_manager.invalidate_caches(conn)
 
                     except Exception as e:
                         print(f"Failed to read from {topic}-{part}: {e}")
                         self._hwms[(topic, part)] = 0
-                        if self.mode == "cluster":
-                            await self.invalidate_caches()
+                        await self.cluster_manager.invalidate_caches()
 
             if messages_polled_this_round == 0:
                 break
@@ -292,8 +126,7 @@ class Consumer:
 
     async def commit(self) -> List[Dict[str, Any]]:
         """
-        Commits the current tracked offsets for all assigned partitions
-        to the correct broker (leader or single).
+        Commits the current tracked offsets for all assigned partitions.
         """
         print(f"Committing offsets for group '{self.group_id}'...")
         commit_tasks = []
@@ -318,36 +151,27 @@ class Consumer:
     ) -> Dict[str, Any]:
         """Helper to send a commit request to the correct broker."""
         try:
-            conn = await self.get_leader_connection(topic, partition)
+            conn = await self.cluster_manager.get_leader_connection(topic, partition)
             return await conn.send_request(request)
         except Exception as e:
             print(f"Failed to commit for {topic}-{partition}: {e}")
-            if self.mode == "cluster":
-                await self.invalidate_caches()
+            await self.cluster_manager.invalidate_caches()
             return {"status": "error", "message": str(e)}
 
 
 async def main(
-    config_path: Optional[str] = DEFAULT_CONFIG_PATH,
-    topic: Optional[str] = None,
+    config: ConfigManager,
+    topic: str,
     group_id: Optional[str] = None,
 ) -> None:
-    config = TinyStreamConfig.from_ini(config_path or DEFAULT_CONFIG_PATH)  # type: ignore
-
-    mode = config.mode
-    print(f"[Consumer] Starting in '{mode}' mode (from config).")
+    print("[Consumer] Starting in cluster mode (from config).")
 
     if not group_id:
         print("[Consumer] No group_id provided, generating a random one.")
         group_id = f"consumer-{uuid.uuid4()}"
 
-    if not topic:
-        print(
-            "[Consumer] No topic provided. Will randomly pick between available test topics."
-        )
-        topic = "clicks"
     consumer = Consumer(
-        config=config,  # type: ignore
+        config=config,
         group_id=group_id,
     )
 
@@ -369,7 +193,10 @@ async def main(
             if batch:
                 print("--- Received batch ---")
                 for msg in batch:
-                    print(f"Received: {msg}")
+                    try:
+                        print(f"Received: {msg.decode('utf-8')}")
+                    except:
+                        print(f"Received (raw): {msg}")
                 print("----------------------")
                 await consumer.commit()
             else:
@@ -378,15 +205,12 @@ async def main(
     except ConnectionRefusedError:
         print("\n[ERROR] Could not connect to broker or controller.")
         print("Please ensure the broker/controller is running.")
-
     except KeyboardInterrupt:
         print("\n\nStopping consumer... (Ctrl+C pressed)")
-
     except Exception as e:
         print(f"\nAn error occurred: {e}")
-
     finally:
-        if await consumer.is_connected():  # type: ignore
+        if await consumer.is_connected():
             await consumer.close()
             print("Consumer connection closed.")
         else:
@@ -394,24 +218,39 @@ async def main(
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(description="TinyStream Consumer")
+
+    parser.add_argument(
+        "--controller-uri",
+        type=str,
+        default=env_default("TINYSTREAM_CONTROLLER_URI"),
+        help="Controller RPC URI (e.g., localhost:9093). Overrides config.",
+    )
+    parser.add_argument(
+        "--metastore-uri",
+        type=str,
+        default=env_default("TINYSTREAM_METASTORE_URI"),
+        help="Metastore HTTP API URI. Overrides config.",
+    )
+
     parser.add_argument(
         "--config",
         type=str,
-        default=DEFAULT_CONFIG_PATH,
-        help="Path to TinyStream configuration file",
+        default=env_default("TINYSTREAM_CONFIG"),
+        help="Path to a user config file. Overrides default config.",
     )
+
     parser.add_argument(
         "--topic", required=True, type=str, help="Topic to consume from"
     )
     parser.add_argument("--group_id", type=str, help="Consumer group ID")
+
     args = parser.parse_args()
+    config_manager = ConfigManager(args, component_type="broker")
 
     asyncio.run(
         main(
-            config_path=args.config,
+            config=config_manager,
             group_id=args.group_id,
             topic=args.topic,
         )

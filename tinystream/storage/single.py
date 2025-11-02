@@ -1,27 +1,34 @@
 import aiofiles
 import os
-from typing import AsyncGenerator, Tuple, Literal
+from typing import AsyncGenerator, Tuple, Literal, List, Any, Optional
 from pathlib import Path
 from tinystream.storage.base import AbstractLogStorage
 
 
-class FileLogStorage(AbstractLogStorage):
+class SingleLogStorage(AbstractLogStorage):
     """
-    The log file format is a sequence of records:
-    [ 8-byte length ][ N-byte payload ]
+    Manages a single log file for a partition.
+    Format: [ 8-byte length ][ N-byte payload ]
+
+    NOTE: This storage class DOES NOT support retention policies,
+    as it cannot delete old data without destroying the entire log.
     """
 
     def __init__(
         self,
-        log_file_path: Path,
+        partition_path: Path,
         prefix_size: int = 8,
         byte_order: Literal["little"] = "little",
+        max_segment_bytes: int = 0,
     ):
-        super().__init__(log_file_path=log_file_path)
+        super().__init__(
+            partition_path=partition_path,
+            prefix_size=prefix_size,
+            byte_order=byte_order,
+            max_segment_bytes=max_segment_bytes,
+        )
         self.prefix_size = prefix_size
         self.byte_order = byte_order
-        self.log_file = log_file_path
-        self._log_dir = log_file_path.parent
         self._write_lock = None
 
     async def _get_lock(self):
@@ -32,20 +39,23 @@ class FileLogStorage(AbstractLogStorage):
         return self._write_lock
 
     async def ensure_ready(self) -> None:
-        if not os.path.exists(self._log_dir):
-            os.makedirs(self._log_dir, exist_ok=True)
+        parent_dir = self.partition_path.parent
+        if not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
 
-    async def append(self, data: bytes) -> Tuple[int, int]:
+    async def append(
+        self, logical_offset: Optional[int], data: bytes
+    ) -> Tuple[int, int]:
         """
         Appends data to the log file with an 8-byte length prefix.
-        Format: [ 8-byte length ][ N-byte payload ]
+        Returns (physical_offset, bytes_written)
         """
         lock = await self._get_lock()
         async with lock:
             payload_len = len(data)
             len_prefix = payload_len.to_bytes(self.prefix_size, self.byte_order)
 
-            async with aiofiles.open(self.log_file, "ab") as f:
+            async with aiofiles.open(self.partition_path, "ab") as f:
                 offset = await f.tell()
 
                 await f.write(len_prefix)
@@ -56,34 +66,27 @@ class FileLogStorage(AbstractLogStorage):
 
     async def read_at(self, offset: int) -> bytes:
         """
-        Reads a single message payload starting at a specific offset.
+        Reads a single message payload starting at a specific physical offset.
         """
-        async with aiofiles.open(self.log_file, "rb") as f:
+        async with aiofiles.open(self.partition_path, "rb") as f:
             await f.seek(offset)
 
             len_prefix_bytes = await f.read(self.prefix_size)
             if not len_prefix_bytes:
-                raise EOFError(
-                    "Reached end of file while trying to read length prefix."
-                )
+                raise EOFError("Reached end of file.")
 
             payload_len = int.from_bytes(len_prefix_bytes, self.byte_order)
 
             payload = await f.read(payload_len)
             if len(payload) != payload_len:
-                raise IOError(
-                    f"Log file corrupted. Expected {payload_len} bytes, got {len(payload)}."
-                )
+                raise IOError("Log file corrupted.")
 
             return payload
 
     async def replay(self) -> AsyncGenerator[Tuple[int, bytes], None]:  # type: ignore
-        """
-        AsyncGenerator
-                Reads and yields all messages from the log file.
-        """
+        """Reads and yields all messages from the log file."""
         try:
-            async with aiofiles.open(self.log_file, "rb") as f:
+            async with aiofiles.open(self.partition_path, "rb") as f:
                 while True:
                     current_offset = await f.tell()
 
@@ -92,12 +95,10 @@ class FileLogStorage(AbstractLogStorage):
                         break
 
                     payload_len = int.from_bytes(len_prefix_bytes, self.byte_order)
-
                     payload = await f.read(payload_len)
+
                     if len(payload) != payload_len:
-                        print(
-                            f"Warning: Log file may be truncated. Expected {payload_len}, got {len(payload)}."
-                        )
+                        print("Warning: Log file may be truncated.")
                         break
 
                     yield current_offset, payload
@@ -107,6 +108,18 @@ class FileLogStorage(AbstractLogStorage):
     async def get_current_offset(self) -> int:
         """Gets the current size of the log file."""
         try:
-            return os.path.getsize(self.log_file)
+            return os.path.getsize(self.partition_path)
         except FileNotFoundError:
             return 0
+
+    async def get_inactive_segments(self) -> List:
+        return []
+
+    async def get_total_size(self) -> int:
+        return await self.get_current_offset()
+
+    async def delete_segment(self, segment: Any):
+        ...
+
+    async def read(self, offset: int) -> bytes:
+        ...
