@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, Type, Literal
+from typing import Dict, Any, Optional, Literal
 import asyncio
 import sys
 import argparse
@@ -12,8 +12,10 @@ from tinystream.client.base import BaseAsyncClient
 from tinystream.config.manager import ConfigManager
 from tinystream.controller import BrokerInfo
 from tinystream.partitions.base import BasePartition
+from tinystream.partitions.segmented import SegmentedLogPartition
+from tinystream.partitions.single import SingleLogPartition
 from tinystream.serializer.base import AbstractSerializer
-from tinystream.storage.base import AbstractLogStorage
+from tinystream.storage import SingleLogStorage, SegmentedLogStorage
 from tinystream.utils.env import env_default
 from tinystream.utils.serlializer import init_serializer
 
@@ -65,49 +67,15 @@ class Broker(BaseAsyncClient):
             host=self.host,
             port=self.port,
         )
-        self.partition_class: Type[BasePartition] = self.init_partition_class(
-            self.broker_config.get("partition_type", "singlelogpartition")
-        )
 
         self.brokers: Dict[int, BrokerInfo] = {}
 
         self.metastore_task: Optional[asyncio.Task[Any]] = None
 
-        # In-memory mapping of actual partition objects:
-        # { topic_name -> { partition_id -> BasePartition } }
         self.partitions: Dict[str, Dict[int, BasePartition]] = {}
         self._lock = asyncio.Lock()
         self._server: Optional[asyncio.Server] = None
         self.retention_task: Optional[asyncio.Task] = None
-
-    @staticmethod
-    def init_partition_class(partition_name: str) -> Type[BasePartition]:
-        if partition_name == "singlelogpartition":
-            from tinystream.partitions.single import SingleLogPartition
-
-            return SingleLogPartition
-        elif partition_name == "segementedlogpartition":
-            from tinystream.partitions.segmented import SegmentedLogPartition
-
-            return SegmentedLogPartition
-        else:
-            raise ValueError(f"Unknown partition type: {partition_name}")
-
-    @staticmethod
-    def init_storage_class(storage_name: str) -> type[AbstractLogStorage]:
-        """
-        Initializes the storage class based on configuration.
-        """
-        if storage_name == "singlelogstorage":
-            from tinystream.storage.single import SingleLogStorage
-
-            return SingleLogStorage
-        elif storage_name == "segmentedlogstorage":
-            from tinystream.storage.segemented import SegmentedLogStorage
-
-            return SegmentedLogStorage
-        else:
-            raise ValueError(f"Unknown storage type: {storage_name}")
 
     async def _create_new_partition(
         self, topic_name: str, partition_id: int
@@ -117,20 +85,36 @@ class Broker(BaseAsyncClient):
         This ensures all config (serializer, storage_class) is
         passed correctly and the partition is registered in the metastore.
         """
-        print(f"Creating new partition: {topic_name}-{partition_id}")
 
-        log_file = Path(f"{self.base_log_dir}/{topic_name}")
+        storage_type = self.broker_config.get("storage_type", "singlelogstorage")
 
-        storage_class = self.init_storage_class(
-            self.broker_config.get("storage_type", "filelogstorage")
-        )(
-            partition_path=log_file,
+        if storage_type == "singlelogstorage":
+            storage_class = SingleLogStorage
+            partition_path = Path(
+                f"{self.base_log_dir}/{topic_name}/{partition_id}.log"
+            )
+        else:
+            storage_class = SegmentedLogStorage
+            partition_path = Path(f"{self.base_log_dir}/{topic_name}/{partition_id}")
+
+        storage_class = storage_class(
+            partition_path=partition_path,
         )
 
-        partition = self.partition_class(
+        partition_name = self.broker_config.get("partition_type", "singlelogpartition")
+
+        if partition_name == "singlelogpartition":
+            partition_class = SingleLogPartition
+        else:
+            partition_class = SegmentedLogPartition
+
+        print(
+            f"Creating new partition: {topic_name}-{partition_id} of type {partition_name} and storage {storage_type}"
+        )
+
+        partition = partition_class(
             topic_name=topic_name,  # type: ignore
             partition_id=partition_id,  # type: ignore
-            base_log_dir=self.base_log_dir,  # type: ignore
             serializer=self.serializer,  # type: ignore
             storage=storage_class,  # type: ignore
         )
@@ -203,6 +187,9 @@ class Broker(BaseAsyncClient):
 
     async def start(self) -> None:
         """Starts the main broker server."""
+
+        await self.load_partitions()
+
         await self.controller_client.ensure_connected()
         print(f"[Broker {self.broker_id}] Registering with controller...")
 

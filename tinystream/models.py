@@ -55,6 +55,7 @@ class TopicInfo(BaseModel):
 
     name: str
     partition_count: int
+    replication_factor: int
     retention_ms: int = 1800
     retention_bytes: int = 10000
 

@@ -57,7 +57,7 @@ class ClusterManager:
         async with self._metadata_lock:
             topic_partitions = self._topic_metadata_cache.get(topic)
             if not topic_partitions:
-                await self._do_refresh()  # Already have lock
+                await self._do_refresh()
                 topic_partitions = self._topic_metadata_cache.get(topic)
                 if not topic_partitions:
                     raise ValueError(f"Topic '{topic}' not found after refresh.")
@@ -79,7 +79,7 @@ class ClusterManager:
                     raise ValueError(f"Topic '{topic}' not found after refresh.")
 
             partition_info = topic_partitions.get(
-                str(partition_id), topic_partitions.get(partition_id)
+                partition_id, topic_partitions.get(partition_id)
             )
             if not partition_info:
                 raise ValueError(
@@ -93,12 +93,12 @@ class ClusterManager:
                 )
 
             broker_info = self._broker_info_cache.get(
-                str(leader_id), self._broker_info_cache.get(leader_id)
+                leader_id, self._broker_info_cache.get(leader_id)
             )
             if not broker_info:
                 await self._do_refresh()
                 broker_info = self._broker_info_cache.get(
-                    str(leader_id), self._broker_info_cache.get(leader_id)
+                    leader_id, self._broker_info_cache.get(leader_id)
                 )
                 if not broker_info:
                     raise ValueError(f"Broker {leader_id} not found after refresh.")

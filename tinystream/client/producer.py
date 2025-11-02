@@ -136,7 +136,7 @@ async def main(config: ConfigManager) -> None:
             "user": f"user_{i}",
             "action": "clicks",
             "item": "item_A",
-            "payload": _random_payload(),
+            # "payload": _random_payload(),
         }
         for i in range(1)
     ]

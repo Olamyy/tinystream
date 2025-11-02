@@ -106,7 +106,6 @@ class TestFileLogStorage(unittest.TestCase):
         async def _test():
             await self.storage.append(b"some data")
 
-            # Try to read from an invalid offset
             with self.assertRaises(EOFError):
                 await self.storage.read_at(9999)
 

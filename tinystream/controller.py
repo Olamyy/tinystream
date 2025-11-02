@@ -232,6 +232,16 @@ class Controller(BaseAsyncClient):
                 broker_id=broker_id, host=host, port=port
             )
             print(f"[Controller] Registered broker {broker_id} at {host}:{port}")
+            print(
+                f"[Controller] Checking for partitions to assign to new broker {broker_id}..."
+            )
+            for topic in self.topics.values():
+                for part in topic.partitions.values():
+                    if broker_id in part.replicas and part.leader is None:
+                        print(
+                            f"[Controller] Triggering election for {topic.name}-{part.partition_id}"
+                        )
+                        await self._elect_leader(topic.name, part.partition_id)
         return self
 
     async def _handle_deregister(self, request: Dict[str, Any]) -> Dict[str, Any]:

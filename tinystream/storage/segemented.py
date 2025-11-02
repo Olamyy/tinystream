@@ -123,7 +123,7 @@ class SegmentedLogStorage(AbstractLogStorage):
         # This is a problem. The storage layer doesn't know the
         # next logical offset, only the next byte offset.
         # This needs to be managed by the Partition class.
-        # For now, we return the base offset of the next segment.
+        # For now, I just return the base offset of the next segment.
         if not self.active_segment:
             return 0
         return await self.active_segment.get_current_offset()

@@ -152,11 +152,13 @@ class Metastore:
 
         rendered_topics = {}
         for name, meta in topics_data.items():
+            print("name_name", name, meta)
             rendered_topics[name] = {
                 "name": name,
                 "partitions": meta.partitions,
-                "replication_factor": "N/A",
-                "retention_ms": "N/A",
+                "replication_factor": meta.replication_factor,
+                "retention_ms": meta.retention_ms,
+                "retention_bytes": meta.retention_bytes,
             }
 
         return templates.TemplateResponse(

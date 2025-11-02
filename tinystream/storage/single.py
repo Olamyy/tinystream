@@ -1,6 +1,6 @@
 import aiofiles
 import os
-from typing import AsyncGenerator, Tuple, Literal, List, Any
+from typing import AsyncGenerator, Tuple, Literal, List, Any, Optional
 from pathlib import Path
 from tinystream.storage.base import AbstractLogStorage
 
@@ -16,17 +16,19 @@ class SingleLogStorage(AbstractLogStorage):
 
     def __init__(
         self,
-        log_file_path: Path,
+        partition_path: Path,
         prefix_size: int = 8,
         byte_order: Literal["little"] = "little",
-        # These are unused but here for compatibility with the old init
         max_segment_bytes: int = 0,
     ):
-        super().__init__(log_file_path=log_file_path)
+        super().__init__(
+            partition_path=partition_path,
+            prefix_size=prefix_size,
+            byte_order=byte_order,
+            max_segment_bytes=max_segment_bytes,
+        )
         self.prefix_size = prefix_size
         self.byte_order = byte_order
-        self.log_file = log_file_path
-        self._log_dir = log_file_path.parent
         self._write_lock = None
 
     async def _get_lock(self):
@@ -37,10 +39,13 @@ class SingleLogStorage(AbstractLogStorage):
         return self._write_lock
 
     async def ensure_ready(self) -> None:
-        if not os.path.exists(self._log_dir):
-            os.makedirs(self._log_dir, exist_ok=True)
+        parent_dir = self.partition_path.parent
+        if not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
 
-    async def append(self, logical_offset: int, data: bytes) -> Tuple[int, int]:
+    async def append(
+        self, logical_offset: Optional[int], data: bytes
+    ) -> Tuple[int, int]:
         """
         Appends data to the log file with an 8-byte length prefix.
         Returns (physical_offset, bytes_written)
@@ -50,7 +55,7 @@ class SingleLogStorage(AbstractLogStorage):
             payload_len = len(data)
             len_prefix = payload_len.to_bytes(self.prefix_size, self.byte_order)
 
-            async with aiofiles.open(self.log_file, "ab") as f:
+            async with aiofiles.open(self.partition_path, "ab") as f:
                 offset = await f.tell()
 
                 await f.write(len_prefix)
@@ -63,7 +68,7 @@ class SingleLogStorage(AbstractLogStorage):
         """
         Reads a single message payload starting at a specific physical offset.
         """
-        async with aiofiles.open(self.log_file, "rb") as f:
+        async with aiofiles.open(self.partition_path, "rb") as f:
             await f.seek(offset)
 
             len_prefix_bytes = await f.read(self.prefix_size)
@@ -81,7 +86,7 @@ class SingleLogStorage(AbstractLogStorage):
     async def replay(self) -> AsyncGenerator[Tuple[int, bytes], None]:  # type: ignore
         """Reads and yields all messages from the log file."""
         try:
-            async with aiofiles.open(self.log_file, "rb") as f:
+            async with aiofiles.open(self.partition_path, "rb") as f:
                 while True:
                     current_offset = await f.tell()
 
@@ -103,7 +108,7 @@ class SingleLogStorage(AbstractLogStorage):
     async def get_current_offset(self) -> int:
         """Gets the current size of the log file."""
         try:
-            return os.path.getsize(self.log_file)
+            return os.path.getsize(self.partition_path)
         except FileNotFoundError:
             return 0
 

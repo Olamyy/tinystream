@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, Tuple, Literal
+from typing import AsyncGenerator, Tuple, Literal, Optional
 from pathlib import Path
 
 
@@ -21,7 +21,9 @@ class AbstractLogStorage(ABC):
         pass
 
     @abstractmethod
-    async def append(self, logical_offset: int, data: bytes) -> Tuple[int, int]:
+    async def append(
+        self, logical_offset: Optional[int], data: bytes
+    ) -> Tuple[int, int]:
         pass
 
     @abstractmethod

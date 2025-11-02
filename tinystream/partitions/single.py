@@ -1,11 +1,10 @@
 import asyncio
 import time
 from typing import Any, List, Optional
-from pathlib import Path
 
 from tinystream.partitions.base import BasePartition
 from tinystream.serializer.msg_pack import MSGPackSerializer
-from tinystream.storage.segemented import SegmentedLogStorage
+from tinystream.storage import SingleLogStorage
 
 
 class SingleLogPartition(BasePartition):
@@ -13,18 +12,14 @@ class SingleLogPartition(BasePartition):
         self,
         topic_name: str,
         partition_id: int,
-        base_log_dir: Path,
-        storage=None,
+        storage: SingleLogStorage,
         serializer=None,
     ):
         self.topic_name = topic_name
         self.partition_id = partition_id
 
-        log_directory = f"{base_log_dir}/{topic_name}"
-        self.storage = storage or SegmentedLogStorage(
-            partition_path=Path(log_directory)
-        )
         self.serializer = serializer or MSGPackSerializer()
+        self.storage = storage
 
         super().__init__(
             topic_name=self.topic_name,
@@ -98,7 +93,10 @@ class SingleLogPartition(BasePartition):
             print(f"Loading partition {self.topic_name}-{self.partition_id}...")
             self._index = []
 
+            print("index_index_index", self._index)
+
             async for physical_offset, _ in self.storage.replay():
+                print("physical_offset:", physical_offset, "_:", _)
                 self._index.append(physical_offset)
 
             self._next_logical_offset = len(self._index)
@@ -119,7 +117,10 @@ class SingleLogPartition(BasePartition):
         serialized_data = self.serializer.serialize(data)
 
         async with self._lock:
-            physical_offset, _ = await self.storage.append(serialized_data)
+            physical_offset, _ = await self.storage.append(
+                data=serialized_data,
+                logical_offset=None,
+            )
 
             self._index.append(physical_offset)
 

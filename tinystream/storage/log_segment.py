@@ -150,7 +150,7 @@ class LogSegment:
 
                 payload_len = int.from_bytes(len_prefix_bytes, self.byte_order)
 
-                # We must infer the logical offset.
+                # Need to infer the logical offset.
                 # This assumes offsets are sequential (e.g., 100, 101, 102)
                 # This is a placeholder for a real implementation that
                 # would store the offset *in the log message*

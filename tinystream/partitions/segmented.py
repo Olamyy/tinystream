@@ -88,6 +88,7 @@ class SegmentedLogPartition(BasePartition):
             print(f"Loading partition {self.topic_name}-{self.partition_id}...")
             message_count = 0
             try:
+                print("Storage Path", self.storage.partition_path)
                 async for _, _ in self.storage.replay():
                     message_count += 1
             except Exception as e:

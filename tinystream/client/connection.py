@@ -43,7 +43,7 @@ class TinyStreamAPI:
             if self.is_connected:
                 return
 
-            print(f"Connecting to controller at {self.host}:{self.port}...")
+            print(f"Connecting to broker at {self.host}:{self.port}...")
             try:
                 self._reader, self._writer = await asyncio.open_connection(
                     self.host, self.port
