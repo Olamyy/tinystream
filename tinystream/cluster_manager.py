@@ -2,7 +2,7 @@ import asyncio
 from typing import Dict, Any, Tuple, Optional
 from tinystream.client.connection import TinyStreamAPI
 from tinystream.serializer.base import AbstractSerializer
-from tinystream.config.manager import ConfigManager  # Added
+from tinystream.config.manager import ConfigManager
 
 
 class ClusterManager:

@@ -65,7 +65,7 @@ async def stats_reporter(stats_queue: asyncio.Queue):
 
     async def print_stats():
         while True:
-            await asyncio.sleep(5)  # Report every 5 seconds
+            await asyncio.sleep(5)
             elapsed = time.monotonic() - start_time
             if elapsed == 0:
                 continue
