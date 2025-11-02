@@ -97,7 +97,7 @@ class Broker(BaseAsyncClient):
             storage_class = SegmentedLogStorage
             partition_path = Path(f"{self.base_log_dir}/{topic_name}/{partition_id}")
 
-        storage_class = storage_class(
+        storage_instance = storage_class(
             partition_path=partition_path,
         )
 
@@ -116,7 +116,7 @@ class Broker(BaseAsyncClient):
             topic_name=topic_name,  # type: ignore
             partition_id=partition_id,  # type: ignore
             serializer=self.serializer,  # type: ignore
-            storage=storage_class,  # type: ignore
+            storage=storage_instance,  # type: ignore
         )
 
         await partition.load()

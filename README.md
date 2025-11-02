@@ -81,7 +81,7 @@ uv run python -m tinystream.admin create-topic \
     --topic "events" \
     --partitions 3 \
     --replication-factor 1 \
-    --controller-uri "localhost:6000"
+    --metastore "localhost:6000"
 ```
 
 
